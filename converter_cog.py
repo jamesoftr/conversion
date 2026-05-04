@@ -6,18 +6,13 @@ from collections import OrderedDict
 
 CACHE_MAX_SIZE = 500
 
-# ── Add the IDs of bots whose V2 messages you want auto-converted ─────────────
-# Leave empty [] to convert ALL bots' V2 messages
 AUTO_CONVERT_BOT_IDS = [
     # 000000000000000000,  # Pokétwo
-    # add more bot IDs here
 ]
 
 _converted: OrderedDict[int, bool] = OrderedDict()
 _CONVERTED_MAX = 1000
 
-# MESSAGE_UPDATE payloads often omit `author`, so we keep a map of
-# message_id → author info gathered from MESSAGE_CREATE.
 _author_cache: OrderedDict[int, dict] = OrderedDict()
 _AUTHOR_CACHE_MAX = 2000
 
@@ -30,7 +25,6 @@ def _store_author(message_id: int, author: dict):
 
 
 def _get_author(message_id: int, payload_author: dict) -> dict:
-    """Return author from payload if present, else fall back to cache."""
     if payload_author:
         return payload_author
     return _author_cache.get(message_id, {})
@@ -47,7 +41,18 @@ def _already_converted(message_id: int) -> bool:
     return message_id in _converted
 
 
-# ── Component walking ─────────────────────────────────────────────────────────
+# Component type reference (Discord API):
+#  1  = ActionRow
+#  2  = Button
+#  3  = StringSelect
+#  9  = Section        ← has "components" (children) + optional "accessory"
+#  10 = TextDisplay
+#  11 = Thumbnail      ← has "media" + optional "description"
+#  12 = MediaGallery   ← has "items"
+#  13 = File
+#  14 = Separator
+#  17 = Container
+#  25 = Section (older name — same structure, keep both)
 
 def _walk(components: list, result: dict):
     for comp in components:
@@ -61,7 +66,7 @@ def _walk(components: list, result: dict):
         elif ctype == 1:       # ActionRow
             _walk(comp.get("components", []), result)
 
-        elif ctype == 25:      # Section — children in "components", accessory separate
+        elif ctype in (9, 25): # Section — children in "components", button in "accessory"
             _walk(comp.get("components", []), result)
             accessory = comp.get("accessory")
             if accessory:
@@ -72,14 +77,14 @@ def _walk(components: list, result: dict):
             if content:
                 result["text"].append(content)
 
-        elif ctype == 14:      # Separator
-            pass
-
-        elif ctype == 9:       # Thumbnail
+        elif ctype == 11:      # Thumbnail (correct type number)
             url = (comp.get("media") or {}).get("url", "")
             desc = comp.get("description", "")
             if url and result["thumbnail"] is None:
                 result["thumbnail"] = (url, desc)
+
+        elif ctype == 14:      # Separator
+            pass
 
         elif ctype == 12:      # MediaGallery
             for item in comp.get("items", []):
@@ -109,8 +114,11 @@ def _walk(components: list, result: dict):
             result["selects"].append((placeholder, options))
 
         else:
-            # Unknown type — recurse into children if any
+            # Unknown — recurse defensively
             _walk(comp.get("components", []), result)
+            accessory = comp.get("accessory")
+            if accessory:
+                _walk([accessory], result)
 
 
 def _parse(raw_components: list) -> dict:
@@ -155,7 +163,9 @@ def _build_embeds(message: discord.Message, raw_components: list) -> list[discor
         for ph, opts in data["selects"]:
             desc_parts.append(f"**{ph}:** " + (", ".join(f"`{o}`" for o in opts) or "*no options*"))
 
-    description = "\n\n".join(desc_parts) if desc_parts else "*No readable content.*"
+    # Consider it readable if there's text OR at least one image
+    has_content = bool(desc_parts) or bool(data["images"]) or data["thumbnail"] is not None
+    description = "\n\n".join(desc_parts) if desc_parts else "*No text content.*"
     if len(description) > 4090:
         description = description[:4087] + "…"
 
@@ -175,7 +185,7 @@ def _build_embeds(message: discord.Message, raw_components: list) -> list[discor
             extra.description = f"*{desc}*"
         embeds.append(extra)
 
-    return embeds
+    return embeds if has_content else []
 
 
 async def _get_or_create_webhook(channel: discord.TextChannel) -> discord.Webhook:
@@ -209,15 +219,31 @@ async def _send_via_webhook(message: discord.Message, embeds: list[discord.Embed
 
 
 def _is_v2_message(payload: dict, components: list) -> bool:
-    """
-    Detect a Components V2 message via either:
-      - A top-level Container (type 17) in components, OR
-      - Discord's IS_COMPONENTS_V2 flag (bit 15 = 32768)
-    The flag alone (without components) is not enough — we need something to convert.
-    """
     has_container = any(c.get("type") == 17 for c in components)
     flag_v2       = bool(payload.get("flags", 0) & (1 << 15))
     return (has_container or flag_v2) and bool(components)
+
+
+def _summarise_components(components: list, indent: int = 0) -> str:
+    lines = []
+    pad = "  " * indent
+    for comp in components:
+        ctype = comp.get("type", "?")
+        label = comp.get("content") or comp.get("label") or comp.get("placeholder") or ""
+        if label:
+            label = f' "{label[:50]}"'
+        lines.append(f"{pad}type={ctype}{label}")
+        children = comp.get("components", [])
+        if children:
+            lines.append(_summarise_components(children, indent + 1))
+        accessory = comp.get("accessory")
+        if accessory:
+            lines.append(f"{pad}  [accessory]")
+            lines.append(_summarise_components([accessory], indent + 2))
+        for item in comp.get("items", []):
+            url = (item.get("media") or {}).get("url", "")
+            lines.append(f"{pad}  item url={url[:80]}")
+    return "\n".join(lines)
 
 
 class ConverterCog(commands.Cog):
@@ -243,9 +269,9 @@ class ConverterCog(commands.Cog):
             return
 
         components = payload.get("components", [])
-
-        # Cache author from CREATE so UPDATE (which omits it) can look it up
+        flags      = payload.get("flags", 0)
         raw_author = payload.get("author", {})
+
         if raw_author:
             _store_author(message_id, raw_author)
 
@@ -253,35 +279,72 @@ class ConverterCog(commands.Cog):
         author_id = int(author.get("id", 0))
         is_bot    = author.get("bot", False)
 
-        if not _is_v2_message(payload, components):
+        has_container = any(c.get("type") == 17 for c in components)
+        flag_v2       = bool(flags & (1 << 15))
+        is_v2         = _is_v2_message(payload, components)
+
+        print(
+            f"\n{'='*60}\n"
+            f"[DBG] {event_type} | msg={message_id}\n"
+            f"  author_id={author_id} is_bot={is_bot} "
+            f"(in_payload={bool(raw_author)} from_cache={not bool(raw_author) and bool(author)})\n"
+            f"  flags={flags} | flag_v2(bit15)={flag_v2} | has_container(t17)={has_container} | is_v2={is_v2}\n"
+            f"  components({len(components)}): {[c.get('type') for c in components]}\n"
+            f"  already_converted={_already_converted(message_id)}"
+        )
+
+        if components:
+            tree = _summarise_components(components)
+            print(f"  component tree:\n{tree}")
+
+        if not is_v2:
+            print(f"  → SKIP: not a V2 message (flag_v2={flag_v2}, has_container={has_container})")
             return
 
         if components:
             self._store(message_id, components)
+            print(f"  → cached {len(components)} top-level component(s)")
 
         if not is_bot:
+            print(f"  → SKIP: author is not a bot (or author unknown from payload and cache)")
             return
 
         if AUTO_CONVERT_BOT_IDS and author_id not in AUTO_CONVERT_BOT_IDS:
+            print(f"  → SKIP: bot {author_id} not in AUTO_CONVERT_BOT_IDS={AUTO_CONVERT_BOT_IDS}")
+            return
+
+        if not components:
+            print(f"  → SKIP: components list is empty")
             return
 
         if _already_converted(message_id):
+            print(f"  → SKIP: already converted this message")
             return
 
         channel_id = int(payload.get("channel_id", 0))
         channel = self.bot.get_channel(channel_id)
         if channel is None:
+            print(f"  → SKIP: channel {channel_id} not in bot cache")
             return
 
         try:
             message = await channel.fetch_message(message_id)
-        except Exception:
+        except Exception as e:
+            print(f"  → SKIP: fetch_message failed: {type(e).__name__}: {e}")
             return
+
+        parsed = _parse(components)
+        print(
+            f"  parsed → text={len(parsed['text'])} buttons={len(parsed['buttons'])} "
+            f"images={len(parsed['images'])} thumbnail={parsed['thumbnail'] is not None}"
+        )
 
         embeds = _build_embeds(message, components)
-        if not embeds or embeds[0].description == "*No readable content.*":
+        if not embeds:
+            print(f"  → SKIP: _build_embeds produced no content (no text, images, or thumbnail)")
             return
 
+        print(f"  → ✅ CONVERTING: sending {len(embeds)} embed(s) via webhook")
         _mark_converted(message_id)
         await _send_via_webhook(message, embeds)
 
