@@ -6,28 +6,35 @@ from collections import OrderedDict
 
 CACHE_MAX_SIZE = 500
 
+# ── Add the IDs of bots whose V2 messages you want auto-converted ─────────────
+# Leave empty [] to convert ALL bots' V2 messages
+AUTO_CONVERT_BOT_IDS = [
+      # Pokétwo
+    # add more bot IDs here
+]
+
 
 def _walk(components: list, result: dict):
     for comp in components:
         ctype = comp.get("type")
 
-        if ctype == 17:        # Container
+        if ctype == 17:
             if result["color"] is None and comp.get("accent_color") is not None:
                 result["color"] = comp["accent_color"]
             _walk(comp.get("components", []), result)
 
-        elif ctype == 1:       # ActionRow
+        elif ctype == 1:
             _walk(comp.get("components", []), result)
 
-        elif ctype == 10:      # TextDisplay (content field)
+        elif ctype == 10:      # TextDisplay
             content = comp.get("content", "").strip()
             if content:
                 result["text"].append(content)
 
-        elif ctype == 14:      # Separator — visual only
+        elif ctype == 14:      # Separator
             pass
 
-        elif ctype == 9:       # Thumbnail (media + optional description)
+        elif ctype == 9:       # Thumbnail
             url = (comp.get("media") or {}).get("url", "")
             desc = comp.get("description", "")
             if url and result["thumbnail"] is None:
@@ -40,7 +47,7 @@ def _walk(components: list, result: dict):
                 if url:
                     result["images"].append((url, desc))
 
-        elif ctype == 13:      # File attachment component
+        elif ctype == 13:      # File
             f = comp.get("file", {})
             url = f.get("url", "")
             name = f.get("filename", "file")
@@ -61,7 +68,6 @@ def _walk(components: list, result: dict):
             result["selects"].append((placeholder, options))
 
         else:
-            # Recurse into anything unknown that has children
             _walk(comp.get("components", []), result)
 
 
@@ -112,8 +118,7 @@ def _build_embeds(message: discord.Message, raw_components: list) -> list[discor
         description = description[:4087] + "…"
 
     main = discord.Embed(description=description, color=color, timestamp=message.created_at)
-    main.set_author(name=message.author.display_name, icon_url=message.author.display_avatar.url)
-    main.set_footer(text=f"Converted from Components V2  •  #{message.channel.name}")
+    main.set_footer(text=f"#{message.channel.name}  •  Components V2 → Embed")
 
     if data["thumbnail"]:
         main.set_thumbnail(url=data["thumbnail"][0])
@@ -129,6 +134,44 @@ def _build_embeds(message: discord.Message, raw_components: list) -> list[discor
         embeds.append(extra)
 
     return embeds
+
+
+async def _get_or_create_webhook(channel: discord.TextChannel) -> discord.Webhook:
+    """Get existing bot webhook in channel or create one."""
+    webhooks = await channel.webhooks()
+    for wh in webhooks:
+        if wh.name == "V2 Converter":
+            return wh
+    return await channel.create_webhook(name="V2 Converter")
+
+
+async def _send_via_webhook(
+    message: discord.Message,
+    embeds: list[discord.Embed],
+):
+    """Send converted embeds via webhook, impersonating the original sender."""
+    channel = message.channel
+
+    # Webhooks only work in TextChannel, not threads/forums directly
+    # For threads we need the parent channel's webhook
+    if isinstance(channel, discord.Thread):
+        wh = await _get_or_create_webhook(channel.parent)
+        await wh.send(
+            embeds=embeds,
+            username=message.author.display_name,
+            avatar_url=message.author.display_avatar.url,
+            thread=channel,
+        )
+    elif isinstance(channel, discord.TextChannel):
+        wh = await _get_or_create_webhook(channel)
+        await wh.send(
+            embeds=embeds,
+            username=message.author.display_name,
+            avatar_url=message.author.display_avatar.url,
+        )
+    else:
+        # Fallback for unsupported channel types
+        await channel.send(embeds=embeds)
 
 
 class ConverterCog(commands.Cog):
@@ -148,6 +191,8 @@ class ConverterCog(commands.Cog):
     def _get(self, message_id: int) -> list | None:
         return self._cache.get(message_id)
 
+    # ── WebSocket listener — cache + auto-convert ─────────────────────────────
+
     @commands.Cog.listener()
     async def on_socket_raw_receive(self, raw: str | bytes):
         try:
@@ -158,23 +203,65 @@ class ConverterCog(commands.Cog):
                 return
             if data.get("t") not in ("MESSAGE_CREATE", "MESSAGE_UPDATE"):
                 return
+
             payload    = data.get("d", {})
             message_id = int(payload.get("id", 0))
             components = payload.get("components", [])
-            if message_id and components:
-                self._store(message_id, components)
+
+            if not (message_id and components):
+                return
+
+            # Check if this is a Components V2 message (has a Container type 17)
+            has_v2 = any(c.get("type") == 17 for c in components)
+            if not has_v2:
+                return
+
+            self._store(message_id, components)
+
+            # ── Auto-convert ──────────────────────────────────────────────────
+            # Only on MESSAGE_CREATE (not edits)
+            if data.get("t") != "MESSAGE_CREATE":
+                return
+
+            author   = payload.get("author", {})
+            author_id = int(author.get("id", 0))
+
+            # Only convert bots (not regular users sending V2 somehow)
+            if not author.get("bot"):
+                return
+
+            # Filter by bot ID list (if list is empty, convert all bots)
+            if AUTO_CONVERT_BOT_IDS and author_id not in AUTO_CONVERT_BOT_IDS:
+                return
+
+            # Fetch the actual message object so we can use it properly
+            channel_id = int(payload.get("channel_id", 0))
+            channel = self.bot.get_channel(channel_id)
+            if channel is None:
+                return
+
+            try:
+                message = await channel.fetch_message(message_id)
+            except Exception:
+                return
+
+            # Build embeds from raw components
+            embeds = _build_embeds(message, components)
+            if not embeds or embeds[0].description == "*No readable content.*":
+                return
+
+            await _send_via_webhook(message, embeds)
+
         except Exception as e:
-            print(f"[CACHE ERROR] {e}")
+            print(f"[AUTO-CONVERT ERROR] {type(e).__name__}: {e}")
+
+    # ── Manual !convert command ───────────────────────────────────────────────
 
     async def _do_convert(self, target: discord.Message) -> tuple[str, list[discord.Embed]]:
         raw = self._get(target.id)
-        if raw:
-            note = "-# ✅ Source: Components V2 (live cache)"
-        else:
-            raw  = []
-            note = "-# ⚠️ Not in cache — was this message sent before the bot started?"
-
-        embeds = _build_embeds(target, raw)
+        note = "-# ✅ Source: Components V2 (live cache)" if raw else \
+               "-# ⚠️ Not in cache — message may have been sent before bot started."
+        embeds = _build_embeds(target, raw or [])
         intro  = (
             f"📬 **Converted** from {target.author.mention} — "
             f"[Jump to original]({target.jump_url})\n{note}"
@@ -192,12 +279,10 @@ class ConverterCog(commands.Cog):
         except discord.NotFound:
             await ctx.reply("❌ Could not fetch that message.")
             return
-
         try:
             intro, embeds = await self._do_convert(target)
             await ctx.reply(content=intro, embeds=embeds)
         except Exception as e:
-            print(f"[SEND ERROR] {type(e).__name__}: {e}")
             await ctx.reply(f"❌ Error:\n```\n{type(e).__name__}: {e}\n```")
 
     @app_commands.command(name="convert", description="Convert a Components V2 message to a classic embed.")
@@ -214,13 +299,11 @@ class ConverterCog(commands.Cog):
         except discord.NotFound:
             await interaction.response.send_message("❌ Could not fetch that message.", ephemeral=True)
             return
-
         try:
             await interaction.response.defer()
             intro, embeds = await self._do_convert(target)
             await interaction.followup.send(content=intro, embeds=embeds)
         except Exception as e:
-            print(f"[SEND ERROR] {type(e).__name__}: {e}")
             await interaction.followup.send(f"❌ Error:\n```\n{type(e).__name__}: {e}\n```")
 
 
