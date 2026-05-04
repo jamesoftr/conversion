@@ -9,14 +9,31 @@ CACHE_MAX_SIZE = 500
 # ── Add the IDs of bots whose V2 messages you want auto-converted ─────────────
 # Leave empty [] to convert ALL bots' V2 messages
 AUTO_CONVERT_BOT_IDS = [
-      # Pokétwo
+    # 000000000000000000,  # Pokétwo
     # add more bot IDs here
 ]
 
-# Track message IDs we've already auto-converted to avoid double-sending
-# (MESSAGE_UPDATE can fire after MESSAGE_CREATE for the same message)
 _converted: OrderedDict[int, bool] = OrderedDict()
 _CONVERTED_MAX = 1000
+
+# MESSAGE_UPDATE payloads often omit `author`, so we keep a map of
+# message_id → author info gathered from MESSAGE_CREATE.
+_author_cache: OrderedDict[int, dict] = OrderedDict()
+_AUTHOR_CACHE_MAX = 2000
+
+
+def _store_author(message_id: int, author: dict):
+    if message_id not in _author_cache:
+        if len(_author_cache) >= _AUTHOR_CACHE_MAX:
+            _author_cache.popitem(last=False)
+    _author_cache[message_id] = author
+
+
+def _get_author(message_id: int, payload_author: dict) -> dict:
+    """Return author from payload if present, else fall back to cache."""
+    if payload_author:
+        return payload_author
+    return _author_cache.get(message_id, {})
 
 
 def _mark_converted(message_id: int):
@@ -30,17 +47,25 @@ def _already_converted(message_id: int) -> bool:
     return message_id in _converted
 
 
+# ── Component walking ─────────────────────────────────────────────────────────
+
 def _walk(components: list, result: dict):
     for comp in components:
         ctype = comp.get("type")
 
-        if ctype == 17:
+        if ctype == 17:        # Container
             if result["color"] is None and comp.get("accent_color") is not None:
                 result["color"] = comp["accent_color"]
             _walk(comp.get("components", []), result)
 
-        elif ctype == 1:
+        elif ctype == 1:       # ActionRow
             _walk(comp.get("components", []), result)
+
+        elif ctype == 25:      # Section — children in "components", accessory separate
+            _walk(comp.get("components", []), result)
+            accessory = comp.get("accessory")
+            if accessory:
+                _walk([accessory], result)
 
         elif ctype == 10:      # TextDisplay
             content = comp.get("content", "").strip()
@@ -84,6 +109,7 @@ def _walk(components: list, result: dict):
             result["selects"].append((placeholder, options))
 
         else:
+            # Unknown type — recurse into children if any
             _walk(comp.get("components", []), result)
 
 
@@ -153,7 +179,6 @@ def _build_embeds(message: discord.Message, raw_components: list) -> list[discor
 
 
 async def _get_or_create_webhook(channel: discord.TextChannel) -> discord.Webhook:
-    """Get existing bot webhook in channel or create one."""
     webhooks = await channel.webhooks()
     for wh in webhooks:
         if wh.name == "V2 Converter":
@@ -161,11 +186,7 @@ async def _get_or_create_webhook(channel: discord.TextChannel) -> discord.Webhoo
     return await channel.create_webhook(name="V2 Converter")
 
 
-async def _send_via_webhook(
-    message: discord.Message,
-    embeds: list[discord.Embed],
-):
-    """Send converted embeds via webhook, impersonating the original sender."""
+async def _send_via_webhook(message: discord.Message, embeds: list[discord.Embed]):
     channel = message.channel
 
     if isinstance(channel, discord.Thread):
@@ -189,18 +210,14 @@ async def _send_via_webhook(
 
 def _is_v2_message(payload: dict, components: list) -> bool:
     """
-    Return True if this payload looks like a Components V2 message.
-
-    Two signals:
-      1. A top-level container component (type 17) is present in the components list.
-      2. Discord sets flag bit 15 (value 32768) on V2 messages.
-    Either signal is sufficient — slash-command responses sometimes deliver
-    components only in MESSAGE_UPDATE, so we accept the flag alone when
-    components arrive later.
+    Detect a Components V2 message via either:
+      - A top-level Container (type 17) in components, OR
+      - Discord's IS_COMPONENTS_V2 flag (bit 15 = 32768)
+    The flag alone (without components) is not enough — we need something to convert.
     """
     has_container = any(c.get("type") == 17 for c in components)
     flag_v2       = bool(payload.get("flags", 0) & (1 << 15))
-    return has_container or (flag_v2 and bool(components))
+    return (has_container or flag_v2) and bool(components)
 
 
 class ConverterCog(commands.Cog):
@@ -220,8 +237,6 @@ class ConverterCog(commands.Cog):
     def _get(self, message_id: int) -> list | None:
         return self._cache.get(message_id)
 
-    # ── Shared handler used by both MESSAGE_CREATE and MESSAGE_UPDATE ─────────
-
     async def _handle_raw_event(self, event_type: str, payload: dict):
         message_id = int(payload.get("id", 0))
         if not message_id:
@@ -229,28 +244,27 @@ class ConverterCog(commands.Cog):
 
         components = payload.get("components", [])
 
+        # Cache author from CREATE so UPDATE (which omits it) can look it up
+        raw_author = payload.get("author", {})
+        if raw_author:
+            _store_author(message_id, raw_author)
+
+        author    = _get_author(message_id, raw_author)
+        author_id = int(author.get("id", 0))
+        is_bot    = author.get("bot", False)
+
         if not _is_v2_message(payload, components):
             return
 
-        # Always cache when we have components
         if components:
             self._store(message_id, components)
 
-        # Only auto-convert bot messages
-        author    = payload.get("author", {})
-        author_id = int(author.get("id", 0))
-
-        if not author.get("bot"):
+        if not is_bot:
             return
 
         if AUTO_CONVERT_BOT_IDS and author_id not in AUTO_CONVERT_BOT_IDS:
             return
 
-        if not components:
-            return
-
-        # Deduplicate: skip if we already converted this message
-        # (handles the case where both CREATE and UPDATE fire)
         if _already_converted(message_id):
             return
 
@@ -270,8 +284,6 @@ class ConverterCog(commands.Cog):
 
         _mark_converted(message_id)
         await _send_via_webhook(message, embeds)
-
-    # ── WebSocket listener ────────────────────────────────────────────────────
 
     @commands.Cog.listener()
     async def on_socket_raw_receive(self, raw: str | bytes):
