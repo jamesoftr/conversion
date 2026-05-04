@@ -13,6 +13,22 @@ AUTO_CONVERT_BOT_IDS = [
     # add more bot IDs here
 ]
 
+# Track message IDs we've already auto-converted to avoid double-sending
+# (MESSAGE_UPDATE can fire after MESSAGE_CREATE for the same message)
+_converted: OrderedDict[int, bool] = OrderedDict()
+_CONVERTED_MAX = 1000
+
+
+def _mark_converted(message_id: int):
+    if message_id not in _converted:
+        if len(_converted) >= _CONVERTED_MAX:
+            _converted.popitem(last=False)
+        _converted[message_id] = True
+
+
+def _already_converted(message_id: int) -> bool:
+    return message_id in _converted
+
 
 def _walk(components: list, result: dict):
     for comp in components:
@@ -152,8 +168,6 @@ async def _send_via_webhook(
     """Send converted embeds via webhook, impersonating the original sender."""
     channel = message.channel
 
-    # Webhooks only work in TextChannel, not threads/forums directly
-    # For threads we need the parent channel's webhook
     if isinstance(channel, discord.Thread):
         wh = await _get_or_create_webhook(channel.parent)
         await wh.send(
@@ -170,8 +184,23 @@ async def _send_via_webhook(
             avatar_url=message.author.display_avatar.url,
         )
     else:
-        # Fallback for unsupported channel types
         await channel.send(embeds=embeds)
+
+
+def _is_v2_message(payload: dict, components: list) -> bool:
+    """
+    Return True if this payload looks like a Components V2 message.
+
+    Two signals:
+      1. A top-level container component (type 17) is present in the components list.
+      2. Discord sets flag bit 15 (value 32768) on V2 messages.
+    Either signal is sufficient — slash-command responses sometimes deliver
+    components only in MESSAGE_UPDATE, so we accept the flag alone when
+    components arrive later.
+    """
+    has_container = any(c.get("type") == 17 for c in components)
+    flag_v2       = bool(payload.get("flags", 0) & (1 << 15))
+    return has_container or (flag_v2 and bool(components))
 
 
 class ConverterCog(commands.Cog):
@@ -191,7 +220,58 @@ class ConverterCog(commands.Cog):
     def _get(self, message_id: int) -> list | None:
         return self._cache.get(message_id)
 
-    # ── WebSocket listener — cache + auto-convert ─────────────────────────────
+    # ── Shared handler used by both MESSAGE_CREATE and MESSAGE_UPDATE ─────────
+
+    async def _handle_raw_event(self, event_type: str, payload: dict):
+        message_id = int(payload.get("id", 0))
+        if not message_id:
+            return
+
+        components = payload.get("components", [])
+
+        if not _is_v2_message(payload, components):
+            return
+
+        # Always cache when we have components
+        if components:
+            self._store(message_id, components)
+
+        # Only auto-convert bot messages
+        author    = payload.get("author", {})
+        author_id = int(author.get("id", 0))
+
+        if not author.get("bot"):
+            return
+
+        if AUTO_CONVERT_BOT_IDS and author_id not in AUTO_CONVERT_BOT_IDS:
+            return
+
+        if not components:
+            return
+
+        # Deduplicate: skip if we already converted this message
+        # (handles the case where both CREATE and UPDATE fire)
+        if _already_converted(message_id):
+            return
+
+        channel_id = int(payload.get("channel_id", 0))
+        channel = self.bot.get_channel(channel_id)
+        if channel is None:
+            return
+
+        try:
+            message = await channel.fetch_message(message_id)
+        except Exception:
+            return
+
+        embeds = _build_embeds(message, components)
+        if not embeds or embeds[0].description == "*No readable content.*":
+            return
+
+        _mark_converted(message_id)
+        await _send_via_webhook(message, embeds)
+
+    # ── WebSocket listener ────────────────────────────────────────────────────
 
     @commands.Cog.listener()
     async def on_socket_raw_receive(self, raw: str | bytes):
@@ -201,56 +281,13 @@ class ConverterCog(commands.Cog):
             data = json.loads(raw)
             if data.get("op") != 0:
                 return
-            if data.get("t") not in ("MESSAGE_CREATE", "MESSAGE_UPDATE"):
+
+            event_type = data.get("t")
+            if event_type not in ("MESSAGE_CREATE", "MESSAGE_UPDATE"):
                 return
 
-            payload    = data.get("d", {})
-            message_id = int(payload.get("id", 0))
-            components = payload.get("components", [])
-
-            if not (message_id and components):
-                return
-
-            # Check if this is a Components V2 message (has a Container type 17)
-            has_v2 = any(c.get("type") == 17 for c in components)
-            if not has_v2:
-                return
-
-            self._store(message_id, components)
-
-            # ── Auto-convert ──────────────────────────────────────────────────
-            # Only on MESSAGE_CREATE (not edits)
-            if data.get("t") != "MESSAGE_CREATE":
-                return
-
-            author   = payload.get("author", {})
-            author_id = int(author.get("id", 0))
-
-            # Only convert bots (not regular users sending V2 somehow)
-            if not author.get("bot"):
-                return
-
-            # Filter by bot ID list (if list is empty, convert all bots)
-            if AUTO_CONVERT_BOT_IDS and author_id not in AUTO_CONVERT_BOT_IDS:
-                return
-
-            # Fetch the actual message object so we can use it properly
-            channel_id = int(payload.get("channel_id", 0))
-            channel = self.bot.get_channel(channel_id)
-            if channel is None:
-                return
-
-            try:
-                message = await channel.fetch_message(message_id)
-            except Exception:
-                return
-
-            # Build embeds from raw components
-            embeds = _build_embeds(message, components)
-            if not embeds or embeds[0].description == "*No readable content.*":
-                return
-
-            await _send_via_webhook(message, embeds)
+            payload = data.get("d", {})
+            await self._handle_raw_event(event_type, payload)
 
         except Exception as e:
             print(f"[AUTO-CONVERT ERROR] {type(e).__name__}: {e}")
