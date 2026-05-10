@@ -1,7 +1,7 @@
 """
 parser.py  —  Parse Pokétwo bot messages into structured data.
 
-Catch message formats
+Catch message formatsz
 ─────────────────────
 Standard:
   Congratulations <@USER_ID>! You caught a Level N NAME<:gender:ID> (IV%)!
