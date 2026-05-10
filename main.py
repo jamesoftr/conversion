@@ -12,7 +12,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 
 # enable_debug_events=True is REQUIRED for on_socket_raw_receive to fire (converter cog)
-bot = commands.Bot(command_prefix="a!", help_command=None, intents=intents)
+bot = commands.Bot(command_prefix=["a!", "A!", "!"], help_command=None, intents=intents)
 
 
 @bot.event
