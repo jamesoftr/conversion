@@ -191,9 +191,9 @@ def _build_embeds(message: discord.Message, raw_components: list) -> list[discor
 async def _get_or_create_webhook(channel: discord.TextChannel) -> discord.Webhook:
     webhooks = await channel.webhooks()
     for wh in webhooks:
-        if wh.name == "V2 Converter":
+        if wh.name == "V2 Converter Pro":
             return wh
-    return await channel.create_webhook(name="V2 Converter")
+    return await channel.create_webhook(name="V2 Converter Pro")
 
 
 async def _send_via_webhook(message: discord.Message, embeds: list[discord.Embed]):
