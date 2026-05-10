@@ -31,6 +31,7 @@ async def main():
         await bot.load_extension("cogs.help_cog")
         await bot.load_extension("cogs.tracker_cog")
         await bot.load_extension("cogs.leaderboard_cog")
+        await bot.load_extension("cogs.calculator_cog")
         await bot.load_extension("cogs.category_cog")
         await bot.start(TOKEN)
 
