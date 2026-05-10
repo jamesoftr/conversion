@@ -12,7 +12,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 
 # enable_debug_events=True is REQUIRED for on_socket_raw_receive to fire (converter cog)
-bot = commands.Bot(command_prefix="s!", intents=intents, enable_debug_events=True)
+bot = commands.Bot(command_prefix="a!", help_command=None, intents=intents)
 
 
 @bot.event
@@ -28,7 +28,7 @@ async def main():
 
     async with bot:
         await bot.load_extension("converter_cog")
-        await bot.load_extension("help_cog")
+        await bot.load_extension("cogs.help_cog")
         await bot.load_extension("cogs.tracker_cog")
         await bot.load_extension("cogs.leaderboard_cog")
         await bot.load_extension("cogs.category_cog")
