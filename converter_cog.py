@@ -13,6 +13,18 @@ AUTO_CONVERT_BOT_IDS = [
 _converted: OrderedDict[int, bool] = OrderedDict()
 _CONVERTED_MAX = 1000
 
+# Maps original message_id -> channel_id of the webhook reply, so we can
+# label edit conversions with a jump link back to the original.
+_edit_origin: OrderedDict[int, int] = OrderedDict()
+_EDIT_ORIGIN_MAX = 1000
+
+
+def _store_edit_origin(message_id: int, channel_id: int):
+    if message_id not in _edit_origin:
+        if len(_edit_origin) >= _EDIT_ORIGIN_MAX:
+            _edit_origin.popitem(last=False)
+    _edit_origin[message_id] = channel_id
+
 _author_cache: OrderedDict[int, dict] = OrderedDict()
 _AUTHOR_CACHE_MAX = 2000
 
@@ -35,6 +47,10 @@ def _mark_converted(message_id: int):
         if len(_converted) >= _CONVERTED_MAX:
             _converted.popitem(last=False)
         _converted[message_id] = True
+
+
+def _unmark_converted(message_id: int):
+    _converted.pop(message_id, None)
 
 
 def _already_converted(message_id: int) -> bool:
@@ -196,12 +212,14 @@ async def _get_or_create_webhook(channel: discord.TextChannel) -> discord.Webhoo
     return await channel.create_webhook(name="V2 Converter Pro")
 
 
-async def _send_via_webhook(message: discord.Message, embeds: list[discord.Embed]):
+async def _send_via_webhook(message: discord.Message, embeds: list[discord.Embed], *, edited: bool = False):
     channel = message.channel
+    content = "✏️ *(this message was edited)*" if edited else None
 
     if isinstance(channel, discord.Thread):
         wh = await _get_or_create_webhook(channel.parent)
         await wh.send(
+            content=content,
             embeds=embeds,
             username=message.author.display_name,
             avatar_url=message.author.display_avatar.url,
@@ -210,12 +228,13 @@ async def _send_via_webhook(message: discord.Message, embeds: list[discord.Embed
     elif isinstance(channel, discord.TextChannel):
         wh = await _get_or_create_webhook(channel)
         await wh.send(
+            content=content,
             embeds=embeds,
             username=message.author.display_name,
             avatar_url=message.author.display_avatar.url,
         )
     else:
-        await channel.send(embeds=embeds)
+        await channel.send(content=content, embeds=embeds)
 
 
 def _is_v2_message(payload: dict, components: list) -> bool:
@@ -317,9 +336,16 @@ class ConverterCog(commands.Cog):
             print(f"  → SKIP: components list is empty")
             return
 
+        is_edit = event_type == "MESSAGE_UPDATE"
+
         if _already_converted(message_id):
-            print(f"  → SKIP: already converted this message")
-            return
+            if is_edit:
+                # Allow re-conversion for edits
+                print(f"  → EDIT detected: clearing converted flag for re-conversion")
+                _unmark_converted(message_id)
+            else:
+                print(f"  → SKIP: already converted this message")
+                return
 
         channel_id = int(payload.get("channel_id", 0))
         channel = self.bot.get_channel(channel_id)
@@ -344,9 +370,10 @@ class ConverterCog(commands.Cog):
             print(f"  → SKIP: _build_embeds produced no content (no text, images, or thumbnail)")
             return
 
-        print(f"  → ✅ CONVERTING: sending {len(embeds)} embed(s) via webhook")
+        action = "EDITING" if is_edit else "CONVERTING"
+        print(f"  → ✅ {action}: sending {len(embeds)} embed(s) via webhook")
         _mark_converted(message_id)
-        await _send_via_webhook(message, embeds)
+        await _send_via_webhook(message, embeds, edited=is_edit)
 
     @commands.Cog.listener()
     async def on_socket_raw_receive(self, raw: str | bytes):
