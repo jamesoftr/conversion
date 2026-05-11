@@ -214,7 +214,7 @@ async def _get_or_create_webhook(channel: discord.TextChannel) -> discord.Webhoo
 
 async def _send_via_webhook(message: discord.Message, embeds: list[discord.Embed], *, edited: bool = False):
     channel = message.channel
-    content = "✏️ *(this message was edited)*" if edited else None
+    content = f"✏️ *(this message was edited — [jump to original]({message.jump_url}))*" if edited else None
 
     if isinstance(channel, discord.Thread):
         wh = await _get_or_create_webhook(channel.parent)
