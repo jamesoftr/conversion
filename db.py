@@ -367,3 +367,93 @@ async def clear_guild_data(guild_id: int) -> dict:
         "catches": catch_result.deleted_count,
         "flees":   flee_result.deleted_count,
     }
+
+
+# ── Shiny leaderboard (last 24 h + all-time) ──────────────────────────────────
+
+async def get_shiny_leaderboard(guild_id: int, limit: int = 10) -> list[dict]:
+    """Shiny catch leaderboard for the last 24 h (shiny + chain_shiny combined)."""
+    db    = get_db()
+    since = _since()
+    pipeline = [
+        {"$match": {
+            "guild_id":  guild_id,
+            "timestamp": {"$gte": since},
+            "$or": [{"shiny": True}, {"chain_shiny": True}],
+        }},
+        {"$group": {
+            "_id":         "$user_id",
+            "shiny":       {"$sum": {"$cond": ["$shiny",       1, 0]}},
+            "chain_shiny": {"$sum": {"$cond": ["$chain_shiny", 1, 0]}},
+            "total":       {"$sum": 1},
+        }},
+        {"$sort":  {"total": -1}},
+        {"$limit": limit},
+    ]
+    docs = await db.catches.aggregate(pipeline).to_list(limit)
+    return [
+        {"user_id": d["_id"], "total": d["total"],
+         "shiny": d["shiny"], "chain_shiny": d["chain_shiny"]}
+        for d in docs
+    ]
+
+
+async def get_shiny_leaderboard_alltime(guild_id: int, limit: int = 10) -> list[dict]:
+    """Shiny catch leaderboard — all time."""
+    db = get_db()
+    pipeline = [
+        {"$match": {
+            "guild_id": guild_id,
+            "$or": [{"shiny": True}, {"chain_shiny": True}],
+        }},
+        {"$group": {
+            "_id":         "$user_id",
+            "shiny":       {"$sum": {"$cond": ["$shiny",       1, 0]}},
+            "chain_shiny": {"$sum": {"$cond": ["$chain_shiny", 1, 0]}},
+            "total":       {"$sum": 1},
+        }},
+        {"$sort":  {"total": -1}},
+        {"$limit": limit},
+    ]
+    docs = await db.catches.aggregate(pipeline).to_list(limit)
+    return [
+        {"user_id": d["_id"], "total": d["total"],
+         "shiny": d["shiny"], "chain_shiny": d["chain_shiny"]}
+        for d in docs
+    ]
+
+
+# ── Gigantamax leaderboard (last 24 h + all-time) ────────────────────────────
+
+async def get_gigantamax_leaderboard(guild_id: int, limit: int = 10) -> list[dict]:
+    """Gigantamax catch leaderboard for the last 24 h."""
+    db    = get_db()
+    since = _since()
+    pipeline = [
+        {"$match": {
+            "guild_id":  guild_id,
+            "timestamp": {"$gte": since},
+            "gigantamax": True,
+        }},
+        {"$group": {
+            "_id":   "$user_id",
+            "total": {"$sum": 1},
+        }},
+        {"$sort":  {"total": -1}},
+        {"$limit": limit},
+    ]
+    docs = await db.catches.aggregate(pipeline).to_list(limit)
+    return [{"user_id": d["_id"], "total": d["total"]} for d in docs]
+
+
+async def get_gigantamax_leaderboard_alltime(guild_id: int, limit: int = 10) -> list[dict]:
+    """Gigantamax catch leaderboard — all time."""
+    db = get_db()
+    pipeline = [
+        {"$match": {"guild_id": guild_id, "gigantamax": True}},
+        {"$group": {"_id": "$user_id", "total": {"$sum": 1}}},
+        {"$sort":  {"total": -1}},
+        {"$limit": limit},
+    ]
+    docs = await db.catches.aggregate(pipeline).to_list(limit)
+    return [{"user_id": d["_id"], "total": d["total"]} for d in docs]
