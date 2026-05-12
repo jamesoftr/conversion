@@ -1,19 +1,18 @@
 """
 cogs/tracker_cog.py  —  Pokétwo catch & flee tracker.
 
-Profile shows both last-24h and all-time stats with a clean embed layout,
-reply emoji, and a dynamic Discord timestamp for the window reset.
+Profile shows both today's and all-time stats with a clean embed layout,
+reply emoji, and a dynamic Discord timestamp for the window reset (UTC midnight).
 
 Commands
 ────────
-a!profile [@user]                      — Catch profile (24 h + all-time)
+a!profile [@user]                      — Catch profile (today + all-time)
 a!check                                — Reply to a Pokétwo msg to manually record it
 a!fled-logs <category> <channel_id>   — Admin: route fled alerts to a channel
 a!fled-logs list                       — Admin: show current routing
 """
 
 import re
-import time
 import discord
 from discord.ext import commands
 
@@ -29,38 +28,33 @@ PAGE_SIZE      = 15
 OWNER_ID       = None
 
 
-def _reset_unix(resets_in_h: float) -> int:
-    return int(time.time() + resets_in_h * 3600)
-
-
 # ── Profile embed builder ─────────────────────────────────────────────────────
 
 def _profile_embed(
-    target:        discord.Member | discord.User,
-    s:             dict,    # 24h stats
-    sa:            dict,    # all-time stats
-    reset_unix:    int,
+    target:      discord.Member | discord.User,
+    s:           dict,   # today's stats
+    sa:          dict,   # all-time stats
+    reset_unix:  int,
+    today_label: str,
 ) -> discord.Embed:
-    shiny_24h = s["shiny"]  + s["chain_shiny"]
-    shiny_all = sa["shiny"] + sa["chain_shiny"]
+    shiny_today = s["shiny"]  + s["chain_shiny"]
+    shiny_all   = sa["shiny"] + sa["chain_shiny"]
 
-    # Stat rows: (label, 24h value, all-time value)
+    # Stat rows: (label, today value, all-time value)
     rows = [
         ("Catches",          s["total"],       sa["total"]),
-        (f"{E.shiny} Shiny", shiny_24h,        shiny_all),
+        (f"{E.shiny} Shiny", shiny_today,      shiny_all),
         (f"{E.gigantamax}",  s["gigantamax"],  sa["gigantamax"]),
         (f"{E.chain_shiny} Chain", s["chain_shiny"], sa["chain_shiny"]),
     ]
 
-    # Left column: 24h
-    col_24h = "\n".join(
-        f"{E.reply} **{label}** — **{v24}**"
-        for label, v24, _ in rows
+    col_today = "\n".join(
+        f"{E.reply} **{label}** — **{v}**"
+        for label, v, _ in rows
     )
-    # Right column: all-time
     col_all = "\n".join(
-        f"{E.reply} **{label}** — **{vall}**"
-        for label, _, vall in rows
+        f"{E.reply} **{label}** — **{v}**"
+        for label, _, v in rows
     )
 
     embed = discord.Embed(
@@ -69,13 +63,13 @@ def _profile_embed(
     )
     embed.set_thumbnail(url=target.display_avatar.url)
 
-    embed.add_field(name="📅 Last 24 Hours", value=col_24h, inline=True)
-    embed.add_field(name="🏅 All Time",       value=col_all, inline=True)
+    embed.add_field(name=f"📅 Today — {today_label}", value=col_today, inline=True)
+    embed.add_field(name="🏅 All Time",                value=col_all,   inline=True)
     embed.add_field(
         name="\u200b",
         value=(
-            f"> 24h window resets <t:{reset_unix}:R>\n"
-            f"> <t:{reset_unix}:F>"
+            f"> Today's window resets <t:{reset_unix}:R>\n"
+            f"> <t:{reset_unix}:t>"
         ),
         inline=False,
     )
@@ -93,6 +87,7 @@ class ProfileView(discord.ui.View):
         stats_alltime: dict,
         poke_list:     list[dict],
         reset_unix:    int,
+        today_label:   str,
     ):
         super().__init__(timeout=300)
         self.guild_id      = guild_id
@@ -101,16 +96,20 @@ class ProfileView(discord.ui.View):
         self.stats_alltime = stats_alltime
         self.poke_list     = poke_list
         self.reset_unix    = reset_unix
+        self.today_label   = today_label
 
     def _base_embed(self) -> discord.Embed:
-        return _profile_embed(self.target, self.stats, self.stats_alltime, self.reset_unix)
+        return _profile_embed(
+            self.target, self.stats, self.stats_alltime,
+            self.reset_unix, self.today_label,
+        )
 
     @discord.ui.button(label="Type Stats", emoji="🔬", style=discord.ButtonStyle.primary)
     async def type_stats_btn(self, interaction: discord.Interaction, _btn: discord.ui.Button):
         await interaction.response.defer()
         type_totals = pokedata.aggregate_types(self.poke_list)
         if not type_totals:
-            await interaction.followup.send("No type data for the last 24 hours.", ephemeral=True)
+            await interaction.followup.send("No type data for today.", ephemeral=True)
             return
         lines = [
             f"{E.reply} `{t:<12}` **{c}**"
@@ -118,7 +117,7 @@ class ProfileView(discord.ui.View):
         ]
         e = self._base_embed()
         e.add_field(
-            name="🔬 Type Breakdown — Last 24 h",
+            name=f"🔬 Type Breakdown — {self.today_label}",
             value="\n".join(lines),
             inline=False,
         )
@@ -129,7 +128,7 @@ class ProfileView(discord.ui.View):
         await interaction.response.defer()
         region_totals = pokedata.aggregate_regions(self.poke_list)
         if not region_totals:
-            await interaction.followup.send("No region data for the last 24 hours.", ephemeral=True)
+            await interaction.followup.send("No region data for today.", ephemeral=True)
             return
         lines = [
             f"{E.reply} `{r:<14}` **{c}**"
@@ -137,7 +136,7 @@ class ProfileView(discord.ui.View):
         ]
         e = self._base_embed()
         e.add_field(
-            name="🗺️ Region Breakdown — Last 24 h",
+            name=f"🗺️ Region Breakdown — {self.today_label}",
             value="\n".join(lines),
             inline=False,
         )
@@ -157,7 +156,7 @@ class ProfileView(discord.ui.View):
         ]
         e = self._base_embed()
         e.add_field(
-            name=f"📋 Pokémon Caught — page {page + 1}/{total_pages} (last 24 h)",
+            name=f"📋 Pokémon Caught — page {page + 1}/{total_pages} ({self.today_label})",
             value="\n".join(lines) if lines else "*None yet.*",
             inline=False,
         )
@@ -282,7 +281,7 @@ class TrackerCog(commands.Cog):
 
     @commands.command(name="profile", aliases=["pf"])
     async def profile(self, ctx: commands.Context, member: discord.Member = None):
-        """Show catch stats: last 24 hours alongside all-time totals."""
+        """Show catch stats: today (UTC) alongside all-time totals."""
         target   = member or ctx.author
         guild_id = ctx.guild.id
 
@@ -297,8 +296,15 @@ class TrackerCog(commands.Cog):
             await ctx.reply(f"No catches recorded for **{target.display_name}** yet.")
             return
 
-        ru   = _reset_unix(reset_info["resets_in_h"])
-        view = ProfileView(guild_id, target, stats, stats_alltime, poke_list, ru)
+        view = ProfileView(
+            guild_id      = guild_id,
+            target        = target,
+            stats         = stats,
+            stats_alltime = stats_alltime,
+            poke_list     = poke_list,
+            reset_unix    = reset_info["reset_unix"],
+            today_label   = reset_info["today_label"],
+        )
         await ctx.reply(embed=view._base_embed(), view=view)
 
     # ── a!check ───────────────────────────────────────────────────────────────
