@@ -1,8 +1,8 @@
 """
 cogs/tracker_cog.py  —  Pokétwo catch & flee tracker.
 
-Stats commands show BOTH last-24-hour and all-time totals.
-Data is stored permanently — nothing is auto-deleted.
+Profile shows both last-24h and all-time stats with a clean embed layout,
+reply emoji, and a dynamic Discord timestamp for the window reset.
 
 Commands
 ────────
@@ -13,6 +13,7 @@ a!fled-logs list                       — Admin: show current routing
 """
 
 import re
+import time
 import discord
 from discord.ext import commands
 
@@ -21,29 +22,77 @@ import parser as pk_parser
 import pokedata
 import categories as cats
 from categories import get_category, get_category_for_pokemon
+from config import E
 
-# Pokétwo's official bot user ID
 POKETWO_BOT_ID = 716390085896962058
-
-# Items per page in the Pokémon list
-PAGE_SIZE = 15
-
-# Bot owner ID — only this user may run a!cleardata
-OWNER_ID = None  # set via env or replace with your Discord user ID (int)
+PAGE_SIZE      = 15
+OWNER_ID       = None
 
 
-# ── Profile View ──────────────────────────────────────────────────────────────
+def _reset_unix(resets_in_h: float) -> int:
+    return int(time.time() + resets_in_h * 3600)
+
+
+# ── Profile embed builder ─────────────────────────────────────────────────────
+
+def _profile_embed(
+    target:        discord.Member | discord.User,
+    s:             dict,    # 24h stats
+    sa:            dict,    # all-time stats
+    reset_unix:    int,
+) -> discord.Embed:
+    shiny_24h = s["shiny"]  + s["chain_shiny"]
+    shiny_all = sa["shiny"] + sa["chain_shiny"]
+
+    # Stat rows: (label, 24h value, all-time value)
+    rows = [
+        ("Catches",          s["total"],       sa["total"]),
+        (f"{E.shiny} Shiny", shiny_24h,        shiny_all),
+        (f"{E.gigantamax}",  s["gigantamax"],  sa["gigantamax"]),
+        (f"{E.chain_shiny} Chain", s["chain_shiny"], sa["chain_shiny"]),
+    ]
+
+    # Left column: 24h
+    col_24h = "\n".join(
+        f"{E.reply} **{label}** — **{v24}**"
+        for label, v24, _ in rows
+    )
+    # Right column: all-time
+    col_all = "\n".join(
+        f"{E.reply} **{label}** — **{vall}**"
+        for label, _, vall in rows
+    )
+
+    embed = discord.Embed(
+        title=f"{E.profile} {target.display_name}",
+        color=discord.Color.gold(),
+    )
+    embed.set_thumbnail(url=target.display_avatar.url)
+
+    embed.add_field(name="📅 Last 24 Hours", value=col_24h, inline=True)
+    embed.add_field(name="🏅 All Time",       value=col_all, inline=True)
+    embed.add_field(
+        name="\u200b",
+        value=(
+            f"> 24h window resets <t:{reset_unix}:R>\n"
+            f"> <t:{reset_unix}:F>"
+        ),
+        inline=False,
+    )
+    return embed
+
+
+# ── Profile View (buttons) ────────────────────────────────────────────────────
 
 class ProfileView(discord.ui.View):
     def __init__(
         self,
-        guild_id:       int,
-        target:         discord.Member | discord.User,
-        stats:          dict,   # last 24 h
-        stats_alltime:  dict,   # all-time
-        poke_list:      list[dict],          # last 24 h
-        poke_list_all:  list[dict],          # all-time
-        reset_info:     dict,
+        guild_id:      int,
+        target:        discord.Member | discord.User,
+        stats:         dict,
+        stats_alltime: dict,
+        poke_list:     list[dict],
+        reset_unix:    int,
     ):
         super().__init__(timeout=300)
         self.guild_id      = guild_id
@@ -51,79 +100,48 @@ class ProfileView(discord.ui.View):
         self.stats         = stats
         self.stats_alltime = stats_alltime
         self.poke_list     = poke_list
-        self.poke_list_all = poke_list_all
-        self.reset_info    = reset_info
+        self.reset_unix    = reset_unix
 
     def _base_embed(self) -> discord.Embed:
-        s   = self.stats
-        sa  = self.stats_alltime
-        ri  = self.reset_info
-
-        shiny_24h  = s["shiny"]  + s["chain_shiny"]
-        shiny_all  = sa["shiny"] + sa["chain_shiny"]
-
-        e = discord.Embed(
-            title=f"🎮 {self.target.display_name}",
-            color=discord.Color.gold(),
-        )
-        e.set_thumbnail(url=self.target.display_avatar.url)
-
-        # 24-h column
-        e.add_field(
-            name="📅 Last 24 Hours",
-            value=(
-                f"Catches: **{s['total']}**\n"
-                f"✨ Shiny: **{shiny_24h}**\n"
-                f"🔴 Gigantamax: **{s['gigantamax']}**\n"
-                f"🔗 Chain Shiny: **{s['chain_shiny']}**"
-            ),
-            inline=True,
-        )
-        # all-time column
-        e.add_field(
-            name="🏅 All Time",
-            value=(
-                f"Catches: **{sa['total']}**\n"
-                f"✨ Shiny: **{shiny_all}**\n"
-                f"🔴 Gigantamax: **{sa['gigantamax']}**\n"
-                f"🔗 Chain Shiny: **{sa['chain_shiny']}**"
-            ),
-            inline=True,
-        )
-
-        reset_str = db.fmt_reset(ri["resets_in_h"])
-        e.set_footer(text=f"24-hour window · {reset_str}")
-        return e
-
-    # ── Type Stats ────────────────────────────────────────────────────────────
+        return _profile_embed(self.target, self.stats, self.stats_alltime, self.reset_unix)
 
     @discord.ui.button(label="Type Stats", emoji="🔬", style=discord.ButtonStyle.primary)
     async def type_stats_btn(self, interaction: discord.Interaction, _btn: discord.ui.Button):
         await interaction.response.defer()
         type_totals = pokedata.aggregate_types(self.poke_list)
         if not type_totals:
-            await interaction.followup.send("No type data available for the last 24 hours.")
+            await interaction.followup.send("No type data for the last 24 hours.", ephemeral=True)
             return
-        lines = [f"`{t:<12}` {c}" for t, c in list(type_totals.items())[:25]]
+        lines = [
+            f"{E.reply} `{t:<12}` **{c}**"
+            for t, c in list(type_totals.items())[:25]
+        ]
         e = self._base_embed()
-        e.add_field(name="— Type Breakdown (last 24 h) —", value="\n".join(lines), inline=False)
+        e.add_field(
+            name="🔬 Type Breakdown — Last 24 h",
+            value="\n".join(lines),
+            inline=False,
+        )
         await interaction.followup.send(embed=e)
-
-    # ── Region Stats ──────────────────────────────────────────────────────────
 
     @discord.ui.button(label="Region Stats", emoji="🗺️", style=discord.ButtonStyle.primary)
     async def region_stats_btn(self, interaction: discord.Interaction, _btn: discord.ui.Button):
         await interaction.response.defer()
         region_totals = pokedata.aggregate_regions(self.poke_list)
         if not region_totals:
-            await interaction.followup.send("No region data available for the last 24 hours.")
+            await interaction.followup.send("No region data for the last 24 hours.", ephemeral=True)
             return
-        lines = [f"`{r:<14}` {c}" for r, c in region_totals.items()]
+        lines = [
+            f"{E.reply} `{r:<14}` **{c}**"
+            for r, c in region_totals.items()
+        ]
         e = self._base_embed()
-        e.add_field(name="— Region Breakdown (last 24 h) —", value="\n".join(lines), inline=False)
+        e.add_field(
+            name="🗺️ Region Breakdown — Last 24 h",
+            value="\n".join(lines),
+            inline=False,
+        )
         await interaction.followup.send(embed=e)
-
-    # ── Pokémon List ──────────────────────────────────────────────────────────
 
     @discord.ui.button(label="Pokémon Caught", emoji="📋", style=discord.ButtonStyle.secondary)
     async def pokemon_list_btn(self, interaction: discord.Interaction, _btn: discord.ui.Button):
@@ -134,13 +152,13 @@ class ProfileView(discord.ui.View):
         total_pages = max(1, (len(self.poke_list) + PAGE_SIZE - 1) // PAGE_SIZE)
         chunk = self.poke_list[page * PAGE_SIZE : (page + 1) * PAGE_SIZE]
         lines = [
-            f"`{i + page * PAGE_SIZE + 1:>3}.` **{entry['pokemon']}** × {entry['count']}"
+            f"{E.reply} `{i + page * PAGE_SIZE + 1:>3}.` **{entry['pokemon']}** × {entry['count']}"
             for i, entry in enumerate(chunk)
         ]
         e = self._base_embed()
         e.add_field(
-            name=f"— Pokémon Caught — page {page + 1}/{total_pages} (last 24 h) —",
-            value="\n".join(lines) if lines else "None yet.",
+            name=f"📋 Pokémon Caught — page {page + 1}/{total_pages} (last 24 h)",
+            value="\n".join(lines) if lines else "*None yet.*",
             inline=False,
         )
         nav = PokemonListNav(parent=self, page=page, total_pages=total_pages)
@@ -178,7 +196,6 @@ class TrackerCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # Only ever process messages from the official Pokétwo bot
         if message.author.id != POKETWO_BOT_ID:
             return
         if not message.guild:
@@ -186,16 +203,10 @@ class TrackerCog(commands.Cog):
         await self._process_poketwo_message(message)
 
     async def _process_poketwo_message(self, message: discord.Message):
-        """
-        Parse a Pokétwo message and record the catch or flee.
-        Returns ("catch", CatchEvent) | ("flee", FleeEvent) | None.
-        Shared by the live listener and the manual a!check command.
-        """
         guild_id   = message.guild.id
         channel_id = message.channel.id
         full_text  = message.content or ""
 
-        # Catch
         catch = pk_parser.parse_catch(full_text)
         if catch:
             await db.record_catch(
@@ -210,7 +221,6 @@ class TrackerCog(commands.Cog):
             )
             return ("catch", catch)
 
-        # Flee (embed title)
         for embed in message.embeds:
             flee = pk_parser.parse_flee(embed.title or "")
             if flee:
@@ -224,11 +234,10 @@ class TrackerCog(commands.Cog):
     async def _dispatch_fled_logs(
         self,
         original_msg: discord.Message,
-        guild_id: int,
-        pokemon: str,
-        image_url: str | None,
+        guild_id:     int,
+        pokemon:      str,
+        image_url:    str | None,
     ):
-        """Send a fled-log alert to any channels configured for this Pokémon's categories."""
         cat_keys = get_category_for_pokemon(pokemon)
         if not cat_keys:
             return
@@ -247,8 +256,8 @@ class TrackerCog(commands.Cog):
             e = discord.Embed(
                 title=f"🚨 {pokemon} fled!",
                 description=(
-                    f"**Category:** {cat['name']}\n"
-                    f"**Spotted in:** {original_msg.channel.mention}"
+                    f"{E.reply} **Category:** {cat['name']}\n"
+                    f"{E.reply} **Spotted in:** {original_msg.channel.mention}"
                 ),
                 color=discord.Color.red(),
                 timestamp=original_msg.created_at,
@@ -277,11 +286,10 @@ class TrackerCog(commands.Cog):
         target   = member or ctx.author
         guild_id = ctx.guild.id
 
-        stats, stats_alltime, poke_list, poke_list_all, reset_info = (
+        stats, stats_alltime, poke_list, reset_info = (
             await db.get_user_stats(guild_id, target.id),
             await db.get_user_stats_alltime(guild_id, target.id),
             await db.get_user_pokemon_list(guild_id, target.id),
-            await db.get_user_pokemon_list_alltime(guild_id, target.id),
             await db.get_window_reset_info(guild_id),
         )
 
@@ -289,20 +297,16 @@ class TrackerCog(commands.Cog):
             await ctx.reply(f"No catches recorded for **{target.display_name}** yet.")
             return
 
-        view  = ProfileView(guild_id, target, stats, stats_alltime, poke_list, poke_list_all, reset_info)
-        embed = view._base_embed()
-        await ctx.reply(embed=embed, view=view)
+        ru   = _reset_unix(reset_info["resets_in_h"])
+        view = ProfileView(guild_id, target, stats, stats_alltime, poke_list, ru)
+        await ctx.reply(embed=view._base_embed(), view=view)
 
-    # ── a!check (manual backfill) ─────────────────────────────────────────────
+    # ── a!check ───────────────────────────────────────────────────────────────
 
     @commands.command(name="check")
     @commands.has_permissions(manage_guild=True)
     async def check(self, ctx: commands.Context):
-        """
-        Reply to a Pokétwo message to manually add its catch or flee to the records.
-
-        Usage: reply to any Pokétwo catch/flee message, then type `a!check`
-        """
+        """Reply to a Pokétwo message to manually record it."""
         if ctx.message.reference is None:
             await ctx.reply("❌ Please **reply** to the Pokétwo message you want to record.")
             return
@@ -338,19 +342,19 @@ class TrackerCog(commands.Cog):
 
         if event_type == "catch":
             flags = []
-            if event.shiny:       flags.append("✨ Shiny")
-            if event.gigantamax:  flags.append("🔴 Gigantamax")
-            if event.chain_shiny: flags.append("🔗 Chain Shiny")
+            if event.shiny:       flags.append(f"{E.shiny} Shiny")
+            if event.gigantamax:  flags.append(f"{E.gigantamax} Gigantamax")
+            if event.chain_shiny: flags.append(f"{E.chain_shiny} Chain Shiny")
             iv_str   = f"{event.iv:.2f}%" if event.iv is not None else "Hidden"
-            flag_str = "  " + "  ".join(flags) if flags else ""
+            flag_str = "  ".join(flags)
 
             e = discord.Embed(
                 title="✅ Catch recorded manually",
                 description=(
-                    f"**Pokémon:** {event.pokemon}\n"
-                    f"**User:** <@{event.user_id}>\n"
-                    f"**IV:** {iv_str}"
-                    + (f"\n{flag_str}" if flags else "")
+                    f"{E.reply} **Pokémon:** {event.pokemon}\n"
+                    f"{E.reply} **User:** <@{event.user_id}>\n"
+                    f"{E.reply} **IV:** {iv_str}"
+                    + (f"\n{E.reply} {flag_str}" if flags else "")
                 ),
                 color=discord.Color.green(),
             )
@@ -360,7 +364,7 @@ class TrackerCog(commands.Cog):
         else:
             e = discord.Embed(
                 title="✅ Flee recorded manually",
-                description=f"**Pokémon:** {event.pokemon}",
+                description=f"{E.reply} **Pokémon:** {event.pokemon}",
                 color=discord.Color.orange(),
             )
             e.set_footer(text=f"Added by {ctx.author}")
@@ -377,8 +381,8 @@ class TrackerCog(commands.Cog):
         Configure where fled-log alerts are sent.
 
         Usage:
-          a!fled-logs <category> <channel_id>   — Set routing
-          a!fled-logs list                       — Show current config
+          a!fled-logs <category> <channel_id>
+          a!fled-logs list
         """
         if not category:
             await ctx.reply(
@@ -392,11 +396,13 @@ class TrackerCog(commands.Cog):
             if not configs:
                 await ctx.reply("No fled-log channels configured yet.")
                 return
-            lines = []
-            for cfg in configs:
-                ch     = self.bot.get_channel(cfg["channel_id"])
-                ch_str = ch.mention if ch else f"`{cfg['channel_id']}`"
-                lines.append(f"**{cfg['category_key']}** → {ch_str}")
+            lines = [
+                f"{E.reply} **{cfg['category_key']}** → "
+                + (self.bot.get_channel(cfg["channel_id"]).mention
+                   if self.bot.get_channel(cfg["channel_id"])
+                   else f"`{cfg['channel_id']}`")
+                for cfg in configs
+            ]
             e = discord.Embed(
                 title="Fled-log routing",
                 description="\n".join(lines),
@@ -433,11 +439,7 @@ class TrackerCog(commands.Cog):
 
     @commands.command(name="cleardata")
     async def cleardata(self, ctx: commands.Context):
-        """
-        [Owner only] Permanently delete ALL catch and flee data for this guild.
-
-        Usage: a!cleardata
-        """
+        """[Owner only] Permanently delete ALL data for this guild."""
         owner_id = OWNER_ID or (await self.bot.application_info()).owner.id
         if ctx.author.id != owner_id:
             await ctx.reply("❌ Only the bot owner can use this command.")
@@ -446,8 +448,8 @@ class TrackerCog(commands.Cog):
         confirm_embed = discord.Embed(
             title="⚠️ Confirm Data Deletion",
             description=(
-                "This will permanently delete **all catches and flees** recorded "
-                "for this server (all time — cannot be undone).\n\n"
+                "This will permanently delete **all catches and flees** for this server.\n"
+                "This cannot be undone.\n\n"
                 "React with ✅ to confirm or ❌ to cancel."
             ),
             color=discord.Color.orange(),
@@ -468,13 +470,17 @@ class TrackerCog(commands.Cog):
             reaction, _ = await self.bot.wait_for("reaction_add", timeout=30.0, check=check)
         except asyncio.TimeoutError:
             await confirm_msg.edit(embed=discord.Embed(
-                title="⏱️ Timed out", description="Data deletion cancelled.", color=discord.Color.greyple()
+                title="⏱️ Timed out",
+                description="Data deletion cancelled.",
+                color=discord.Color.greyple(),
             ))
             return
 
         if str(reaction.emoji) == "❌":
             await confirm_msg.edit(embed=discord.Embed(
-                title="❌ Cancelled", description="No data was deleted.", color=discord.Color.greyple()
+                title="❌ Cancelled",
+                description="No data was deleted.",
+                color=discord.Color.greyple(),
             ))
             return
 
@@ -482,8 +488,8 @@ class TrackerCog(commands.Cog):
         e = discord.Embed(
             title="🗑️ Data Cleared",
             description=(
-                f"Deleted **{deleted['catches']}** catch record(s) and "
-                f"**{deleted['flees']}** flee record(s) for this server."
+                f"{E.reply} **{deleted['catches']}** catch record(s) deleted\n"
+                f"{E.reply} **{deleted['flees']}** flee record(s) deleted"
             ),
             color=discord.Color.green(),
         )
