@@ -3,16 +3,15 @@ cogs/leaderboard_cog.py  —  Leaderboard commands.
 
 Features:
   • Board-type dropdown: Catches / Shiny / Gigantamax / (Category)
-  • Time-window dropdown: Last 24 Hours / All Time
+  • Time-window dropdown: Today / All Time
+  • "Today" = UTC midnight → now; resets at next UTC midnight
   • Dynamic Discord timestamp for window reset
-  • Pings the user who ran the command (allowed_mentions safe)
 
 Commands:
   a!leaderboard [category]
   a!lb          [category]
 """
 
-import time
 import discord
 from discord.ext import commands
 
@@ -22,10 +21,6 @@ from config import E
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _reset_unix(resets_in_h: float) -> int:
-    return int(time.time() + resets_in_h * 3600)
-
 
 async def _resolve_entries(bot, guild, raw_entries) -> list[dict]:
     """Attach display_name to each raw entry dict."""
@@ -88,12 +83,12 @@ class LeaderboardView(discord.ui.View):
     def __init__(
         self,
         bot,
-        guild:       discord.Guild,
-        guild_id:    int,
-        invoker_id:  int,
-        category:    dict | None,
-        reset_unix:  int,
-        resets_in_h: float,
+        guild:      discord.Guild,
+        guild_id:   int,
+        invoker_id: int,
+        category:   dict | None,
+        reset_unix: int,
+        today_label: str,
     ):
         super().__init__(timeout=300)
         self.bot         = bot
@@ -102,14 +97,13 @@ class LeaderboardView(discord.ui.View):
         self.invoker_id  = invoker_id
         self.category    = category
         self.reset_unix  = reset_unix
-        self.resets_in_h = resets_in_h
+        self.today_label = today_label
 
         # State
         self._board  = BOARD_CATEGORY if category else BOARD_CATCHES
-        self._window = "24h"
+        self._window = "today"
 
-        # Build selects dynamically so we can hide the board-type select
-        # when a category is active (only catch data exists per-category)
+        # Board-type select is hidden when a category is active
         if not category:
             self._add_board_select()
         self._add_window_select()
@@ -143,11 +137,11 @@ class LeaderboardView(discord.ui.View):
             row=1,
             options=[
                 discord.SelectOption(
-                    label="Last 24 Hours", value="24h",
-                    emoji="📅",            default=True,
+                    label="Today",    value="today",
+                    emoji="📅",       default=True,
                 ),
                 discord.SelectOption(
-                    label="All Time",      value="alltime",
+                    label="All Time", value="alltime",
                     emoji="🏅",
                 ),
             ],
@@ -183,15 +177,15 @@ class LeaderboardView(discord.ui.View):
     # ── Embed builder ─────────────────────────────────────────────────────────
 
     async def _build_embed(self) -> discord.Embed:
-        is_24h  = self._window == "24h"
-        gid     = self.guild_id
-        board   = self._board
+        is_today = self._window == "today"
+        gid      = self.guild_id
+        board    = self._board
 
         # ── Fetch data ────────────────────────────────────────────────────────
         if board == BOARD_CATEGORY and self.category:
             raw = (
                 await db.get_category_leaderboard(gid, self.category["pokemon"])
-                if is_24h else
+                if is_today else
                 await db.get_category_leaderboard_alltime(gid, self.category["pokemon"])
             )
             title = f"{E.leaderboard} {self.category['name']} Leaderboard"
@@ -199,7 +193,7 @@ class LeaderboardView(discord.ui.View):
         elif board == BOARD_SHINY:
             raw = (
                 await db.get_shiny_leaderboard(gid)
-                if is_24h else
+                if is_today else
                 await db.get_shiny_leaderboard_alltime(gid)
             )
             title = f"{E.leaderboard} Shiny Leaderboard"
@@ -207,7 +201,7 @@ class LeaderboardView(discord.ui.View):
         elif board == BOARD_GIGANTAMAX:
             raw = (
                 await db.get_gigantamax_leaderboard(gid)
-                if is_24h else
+                if is_today else
                 await db.get_gigantamax_leaderboard_alltime(gid)
             )
             title = f"{E.leaderboard} {E.gigantamax} Gigantamax Leaderboard"
@@ -215,7 +209,7 @@ class LeaderboardView(discord.ui.View):
         else:  # BOARD_CATCHES (global)
             raw = (
                 await db.get_leaderboard(gid)
-                if is_24h else
+                if is_today else
                 await db.get_leaderboard_alltime(gid)
             )
             title = f"{E.leaderboard} Global Leaderboard"
@@ -224,10 +218,10 @@ class LeaderboardView(discord.ui.View):
         lines   = _build_lines(entries, board)
 
         # ── Window header ─────────────────────────────────────────────────────
-        if is_24h:
+        if is_today:
             window_header = (
-                f"> 📅 **Last 24 Hours**\n"
-                f"> Resets <t:{self.reset_unix}:R> — <t:{self.reset_unix}:F>"
+                f"> 📅 **Today — {self.today_label}**\n"
+                f"> Resets <t:{self.reset_unix}:R> — <t:{self.reset_unix}:t>"
             )
         else:
             window_header = "> 🏅 **All Time** — complete history"
@@ -271,16 +265,15 @@ class LeaderboardCog(commands.Cog):
                 return
 
         reset_info = await db.get_window_reset_info(guild_id)
-        reset_unix = _reset_unix(reset_info["resets_in_h"])
 
-        view  = LeaderboardView(
+        view = LeaderboardView(
             bot         = self.bot,
             guild       = ctx.guild,
             guild_id    = guild_id,
             invoker_id  = ctx.author.id,
             category    = cat,
-            reset_unix  = reset_unix,
-            resets_in_h = reset_info["resets_in_h"],
+            reset_unix  = reset_info["reset_unix"],
+            today_label = reset_info["today_label"],
         )
         embed = await view._build_embed()
 
