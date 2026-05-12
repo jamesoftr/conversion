@@ -2,7 +2,7 @@
 db.py  —  MongoDB helpers for the Pokémon tracker bot.
 
 Data is kept PERMANENTLY — no TTL expiry.
-  • "Last 24 h" queries are filtered in Python/Mongo with a $gte timestamp.
+  • "Today" queries filter by >= start of current UTC day (midnight).
   • All-time queries have no timestamp filter.
 
 Collections
@@ -22,9 +22,8 @@ import os
 from datetime import datetime, timedelta, timezone
 from motor.motor_asyncio import AsyncIOMotorClient
 
-MONGO_URI  = os.getenv("MONGO_URI", "mongodb://localhost:27017")
-DB_NAME    = os.getenv("MONGO_DB",  "pokebot")
-WINDOW_H   = 24   # hours for the "last 24 h" rolling window
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+DB_NAME   = os.getenv("MONGO_DB",  "pokebot")
 
 _client: AsyncIOMotorClient | None = None
 
@@ -36,9 +35,21 @@ def get_db():
     return _client[DB_NAME]
 
 
-def _since() -> datetime:
-    """UTC timestamp for WINDOW_H hours ago."""
-    return datetime.now(timezone.utc) - timedelta(hours=WINDOW_H)
+def _today_start() -> datetime:
+    """UTC midnight of the current day."""
+    now = datetime.now(timezone.utc)
+    return now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _today_reset_unix() -> int:
+    """Unix timestamp of the next UTC midnight (when today's window resets)."""
+    tomorrow = _today_start() + timedelta(days=1)
+    return int(tomorrow.timestamp())
+
+
+def today_label() -> str:
+    """e.g. '2025-07-14'"""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 # ── One-time index setup (call at startup) ────────────────────────────────────
@@ -52,7 +63,6 @@ async def ensure_indexes() -> None:
       db.flees.dropIndex("timestamp_1")
     """
     db = get_db()
-    # NO expireAfterSeconds — data is permanent
     await db.catches.create_index([("guild_id", 1), ("timestamp", -1)])
     await db.catches.create_index([("guild_id", 1), ("user_id",   1), ("timestamp", -1)])
     await db.flees.create_index(  [("guild_id", 1), ("timestamp", -1)])
@@ -98,61 +108,22 @@ async def record_flee(guild_id: int, pokemon: str, channel_id: int) -> None:
 
 async def get_window_reset_info(guild_id: int) -> dict:
     """
-    Returns info about the rolling 24-hour window:
-      oldest_in_window : datetime | None  — timestamp of the oldest catch/flee in the window
-      resets_in_h      : float            — hours until that record drops out of the window
-                                            (i.e. oldest + 24h - now). 0 if window is empty.
+    Returns info about today's window:
+      reset_unix  : int    — Unix timestamp of next UTC midnight
+      today_label : str    — e.g. '2025-07-14'
     """
-    db    = get_db()
-    since = _since()
-    now   = datetime.now(timezone.utc)
-
-    # Oldest catch in the current 24-h window
-    cursor = db.catches.find(
-        {"guild_id": guild_id, "timestamp": {"$gte": since}},
-        {"timestamp": 1}
-    ).sort("timestamp", 1).limit(1)
-    docs = await cursor.to_list(1)
-
-    if not docs:
-        # Also check flees
-        cursor = db.flees.find(
-            {"guild_id": guild_id, "timestamp": {"$gte": since}},
-            {"timestamp": 1}
-        ).sort("timestamp", 1).limit(1)
-        docs = await cursor.to_list(1)
-
-    if not docs:
-        return {"oldest_in_window": None, "resets_in_h": 0.0}
-
-    oldest = docs[0]["timestamp"]
-    if oldest.tzinfo is None:
-        oldest = oldest.replace(tzinfo=timezone.utc)
-
-    resets_at  = oldest + timedelta(hours=WINDOW_H)
-    resets_in  = max(0.0, (resets_at - now).total_seconds() / 3600)
-    return {"oldest_in_window": oldest, "resets_in_h": resets_in}
+    return {
+        "reset_unix":  _today_reset_unix(),
+        "today_label": today_label(),
+    }
 
 
-def fmt_reset(resets_in_h: float) -> str:
-    """Human-readable 'resets in Xh Ym' string."""
-    if resets_in_h <= 0:
-        return "window is empty"
-    total_min = int(resets_in_h * 60)
-    h, m = divmod(total_min, 60)
-    if h and m:
-        return f"resets in {h}h {m}m"
-    if h:
-        return f"resets in {h}h"
-    return f"resets in {m}m"
-
-
-# ── User stats (last 24 h) ────────────────────────────────────────────────────
+# ── User stats (today + all-time) ─────────────────────────────────────────────
 
 async def get_user_stats(guild_id: int, user_id: int) -> dict:
-    """Returns catch stats for the last 24 h."""
+    """Returns catch stats for today (UTC midnight → now)."""
     db    = get_db()
-    since = _since()
+    since = _today_start()
     pipeline = [
         {"$match": {"guild_id": guild_id, "user_id": user_id, "timestamp": {"$gte": since}}},
         {"$group": {
@@ -193,9 +164,9 @@ async def get_user_stats_alltime(guild_id: int, user_id: int) -> dict:
 
 
 async def get_user_pokemon_list(guild_id: int, user_id: int) -> list[dict]:
-    """Returns [{pokemon, count}, ...] sorted descending by count, last 24 h."""
+    """Returns [{pokemon, count}, ...] sorted descending by count, today only."""
     db    = get_db()
-    since = _since()
+    since = _today_start()
     pipeline = [
         {"$match": {"guild_id": guild_id, "user_id": user_id, "timestamp": {"$gte": since}}},
         {"$group": {"_id": "$pokemon", "count": {"$sum": 1}}},
@@ -217,12 +188,12 @@ async def get_user_pokemon_list_alltime(guild_id: int, user_id: int) -> list[dic
     return await db.catches.aggregate(pipeline).to_list(None)
 
 
-# ── Category stats (last 24 h + all-time) ─────────────────────────────────────
+# ── Category stats (today + all-time) ─────────────────────────────────────────
 
 async def get_category_stats(guild_id: int, category_pokemon: set[str]) -> dict:
-    """Returns {caught, fled, total_spawned} for a set of Pokémon, last 24 h."""
+    """Returns {caught, fled, total_spawned} for a set of Pokémon, today only."""
     db    = get_db()
-    since = _since()
+    since = _today_start()
     plist = list(category_pokemon)
 
     caught = await db.catches.count_documents({
@@ -254,12 +225,12 @@ async def get_category_stats_alltime(guild_id: int, category_pokemon: set[str]) 
     return {"caught": caught, "fled": fled, "total_spawned": caught + fled}
 
 
-# ── Leaderboard (last 24 h + all-time) ───────────────────────────────────────
+# ── Leaderboard (today + all-time) ────────────────────────────────────────────
 
 async def get_leaderboard(guild_id: int, limit: int = 10) -> list[dict]:
-    """Global catch leaderboard for the last 24 h."""
+    """Global catch leaderboard for today (UTC)."""
     db    = get_db()
-    since = _since()
+    since = _today_start()
     pipeline = [
         {"$match": {"guild_id": guild_id, "timestamp": {"$gte": since}}},
         {"$group": {
@@ -296,9 +267,9 @@ async def get_leaderboard_alltime(guild_id: int, limit: int = 10) -> list[dict]:
 async def get_category_leaderboard(
     guild_id: int, category_pokemon: set[str], limit: int = 10
 ) -> list[dict]:
-    """Category catch leaderboard for the last 24 h."""
+    """Category catch leaderboard for today (UTC)."""
     db    = get_db()
-    since = _since()
+    since = _today_start()
     pipeline = [
         {"$match": {
             "guild_id":  guild_id,
@@ -331,50 +302,12 @@ async def get_category_leaderboard_alltime(
     return [{"user_id": d["_id"], "total": d["total"]} for d in docs]
 
 
-# ── Fled-log channel config ────────────────────────────────────────────────────
-
-async def set_fled_log_channel(guild_id: int, category_key: str, channel_id: int) -> None:
-    await get_db().fled_log_channels.update_one(
-        {"guild_id": guild_id, "category_key": category_key},
-        {"$set": {"channel_id": channel_id}},
-        upsert=True,
-    )
-
-
-async def get_fled_log_channels(guild_id: int) -> list[dict]:
-    return await get_db().fled_log_channels.find({"guild_id": guild_id}).to_list(None)
-
-
-async def get_fled_log_channel(guild_id: int, category_key: str) -> int | None:
-    doc = await get_db().fled_log_channels.find_one(
-        {"guild_id": guild_id, "category_key": category_key}
-    )
-    return doc["channel_id"] if doc else None
-
-
-# ── Data management ───────────────────────────────────────────────────────────
-
-async def clear_guild_data(guild_id: int) -> dict:
-    """
-    [Owner only] Delete ALL catches and flees for a guild (permanent — no time filter).
-    Returns {"catches": int, "flees": int} with the deleted counts.
-    """
-    db = get_db()
-
-    catch_result = await db.catches.delete_many({"guild_id": guild_id})
-    flee_result  = await db.flees.delete_many({"guild_id": guild_id})
-    return {
-        "catches": catch_result.deleted_count,
-        "flees":   flee_result.deleted_count,
-    }
-
-
-# ── Shiny leaderboard (last 24 h + all-time) ──────────────────────────────────
+# ── Shiny leaderboard (today + all-time) ──────────────────────────────────────
 
 async def get_shiny_leaderboard(guild_id: int, limit: int = 10) -> list[dict]:
-    """Shiny catch leaderboard for the last 24 h (shiny + chain_shiny combined)."""
+    """Shiny catch leaderboard for today (UTC)."""
     db    = get_db()
-    since = _since()
+    since = _today_start()
     pipeline = [
         {"$match": {
             "guild_id":  guild_id,
@@ -423,22 +356,19 @@ async def get_shiny_leaderboard_alltime(guild_id: int, limit: int = 10) -> list[
     ]
 
 
-# ── Gigantamax leaderboard (last 24 h + all-time) ────────────────────────────
+# ── Gigantamax leaderboard (today + all-time) ─────────────────────────────────
 
 async def get_gigantamax_leaderboard(guild_id: int, limit: int = 10) -> list[dict]:
-    """Gigantamax catch leaderboard for the last 24 h."""
+    """Gigantamax catch leaderboard for today (UTC)."""
     db    = get_db()
-    since = _since()
+    since = _today_start()
     pipeline = [
         {"$match": {
-            "guild_id":  guild_id,
-            "timestamp": {"$gte": since},
+            "guild_id":   guild_id,
+            "timestamp":  {"$gte": since},
             "gigantamax": True,
         }},
-        {"$group": {
-            "_id":   "$user_id",
-            "total": {"$sum": 1},
-        }},
+        {"$group": {"_id": "$user_id", "total": {"$sum": 1}}},
         {"$sort":  {"total": -1}},
         {"$limit": limit},
     ]
@@ -457,3 +387,40 @@ async def get_gigantamax_leaderboard_alltime(guild_id: int, limit: int = 10) -> 
     ]
     docs = await db.catches.aggregate(pipeline).to_list(limit)
     return [{"user_id": d["_id"], "total": d["total"]} for d in docs]
+
+
+# ── Fled-log channel config ────────────────────────────────────────────────────
+
+async def set_fled_log_channel(guild_id: int, category_key: str, channel_id: int) -> None:
+    await get_db().fled_log_channels.update_one(
+        {"guild_id": guild_id, "category_key": category_key},
+        {"$set": {"channel_id": channel_id}},
+        upsert=True,
+    )
+
+
+async def get_fled_log_channels(guild_id: int) -> list[dict]:
+    return await get_db().fled_log_channels.find({"guild_id": guild_id}).to_list(None)
+
+
+async def get_fled_log_channel(guild_id: int, category_key: str) -> int | None:
+    doc = await get_db().fled_log_channels.find_one(
+        {"guild_id": guild_id, "category_key": category_key}
+    )
+    return doc["channel_id"] if doc else None
+
+
+# ── Data management ───────────────────────────────────────────────────────────
+
+async def clear_guild_data(guild_id: int) -> dict:
+    """
+    [Owner only] Delete ALL catches and flees for a guild (permanent).
+    Returns {"catches": int, "flees": int} with the deleted counts.
+    """
+    db = get_db()
+    catch_result = await db.catches.delete_many({"guild_id": guild_id})
+    flee_result  = await db.flees.delete_many({"guild_id": guild_id})
+    return {
+        "catches": catch_result.deleted_count,
+        "flees":   flee_result.deleted_count,
+    }
