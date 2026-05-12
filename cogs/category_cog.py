@@ -1,5 +1,7 @@
 """
-cogs/category_cog.py  —  Per-category stats (last 24 h).
+cogs/category_cog.py  —  Per-category stats.
+
+Shows BOTH last-24-hour and all-time totals, plus a reset countdown.
 
 Commands:
   a!catstat <category>   — Spawned / caught / fled stats
@@ -20,7 +22,8 @@ class CategoryCog(commands.Cog):
     @commands.command(name="catstat", aliases=["categorystat", "cs"])
     async def catstat(self, ctx: commands.Context, category: str = None):
         """
-        Show spawn / catch / flee statistics for a category (last 24 hours).
+        Show spawn / catch / flee statistics for a category.
+        Displays last-24-hour numbers alongside all-time totals.
 
         Usage:
           a!catstat rares
@@ -41,21 +44,48 @@ class CategoryCog(commands.Cog):
             )
             return
 
-        stats   = await db.get_category_stats(ctx.guild.id, cat["pokemon"])
-        caught  = stats["caught"]
-        fled    = stats["fled"]
-        spawned = stats["total_spawned"]
-        rate    = f"{caught / spawned * 100:.1f}%" if spawned else "N/A"
+        guild_id = ctx.guild.id
+
+        stats_24h, stats_all, reset_info = (
+            await db.get_category_stats(guild_id, cat["pokemon"]),
+            await db.get_category_stats_alltime(guild_id, cat["pokemon"]),
+            await db.get_window_reset_info(guild_id),
+        )
+
+        def catch_rate(caught, spawned):
+            return f"{caught / spawned * 100:.1f}%" if spawned else "N/A"
 
         e = discord.Embed(
-            title=f"📊 {cat['name']} — Last 24 Hours",
+            title=f"📊 {cat['name']}",
             color=discord.Color.blue(),
         )
-        e.add_field(name="Total Spawned", value=str(spawned), inline=True)
-        e.add_field(name="✅ Caught",     value=str(caught),  inline=True)
-        e.add_field(name="💨 Fled",       value=str(fled),    inline=True)
-        e.add_field(name="Catch Rate",    value=rate,         inline=True)
-        e.set_footer(text="Data window: last 24 hours")
+
+        # Last 24 h
+        e.add_field(
+            name="📅 Last 24 Hours",
+            value=(
+                f"Spawned: **{stats_24h['total_spawned']}**\n"
+                f"✅ Caught: **{stats_24h['caught']}**\n"
+                f"💨 Fled: **{stats_24h['fled']}**\n"
+                f"Catch rate: **{catch_rate(stats_24h['caught'], stats_24h['total_spawned'])}**"
+            ),
+            inline=True,
+        )
+
+        # All time
+        e.add_field(
+            name="🏅 All Time",
+            value=(
+                f"Spawned: **{stats_all['total_spawned']}**\n"
+                f"✅ Caught: **{stats_all['caught']}**\n"
+                f"💨 Fled: **{stats_all['fled']}**\n"
+                f"Catch rate: **{catch_rate(stats_all['caught'], stats_all['total_spawned'])}**"
+            ),
+            inline=True,
+        )
+
+        reset_str = db.fmt_reset(reset_info["resets_in_h"])
+        e.set_footer(text=f"24-hour window · {reset_str}")
 
         await ctx.reply(embed=e)
 
