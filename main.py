@@ -2,7 +2,6 @@ import discord
 from discord.ext import commands
 import os
 import asyncio
-
 import db
 import pokedata
 
@@ -12,7 +11,12 @@ intents = discord.Intents.default()
 intents.message_content = True
 
 # enable_debug_events=True is REQUIRED for on_socket_raw_receive to fire (converter cog)
-bot = commands.Bot(command_prefix=["a!", "A!", "!"], help_command=None, intents=intents, enable_debug_events=True)
+bot = commands.Bot(
+    command_prefix=["a!", "A!", "!"],
+    help_command=None,
+    intents=intents,
+    enable_debug_events=True,
+)
 
 
 @bot.event
@@ -24,8 +28,7 @@ async def on_ready():
 
 async def main():
     pokedata.load()
-    await db.ensure_indexes()   # create TTL + query indexes (idempotent)
-
+    await db.ensure_indexes()   # create query indexes (idempotent)
     async with bot:
         await bot.load_extension("converter_cog")
         await bot.load_extension("cogs.help_cog")
