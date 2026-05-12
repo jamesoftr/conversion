@@ -284,13 +284,7 @@ class LeaderboardCog(commands.Cog):
         )
         embed = await view._build_embed()
 
-        # Ping the invoker — allowed_mentions set to only allow the user mention
-        await ctx.send(
-            content=ctx.author.mention,
-            embed=embed,
-            view=view,
-            allowed_mentions=discord.AllowedMentions(users=[ctx.author], everyone=False, roles=False),
-        )
+        await ctx.reply(embed=embed, view=view, mention_author=False)
 
 
 async def setup(bot: commands.Bot):
