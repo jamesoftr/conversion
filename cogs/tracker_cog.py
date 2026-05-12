@@ -1,12 +1,12 @@
 """
-cogs/tracker_cog.py  —  Pokétwo catch & flee tracker (24-hour rolling window).
+cogs/tracker_cog.py  —  Pokétwo catch & flee tracker.
 
-All stats, profiles, and leaderboards reflect the last 24 hours only.
-MongoDB TTL indexes handle automatic expiry — no rounds, no manual cleanup.
+Stats commands show BOTH last-24-hour and all-time totals.
+Data is stored permanently — nothing is auto-deleted.
 
 Commands
 ────────
-a!profile [@user]                      — Catch profile for last 24 h
+a!profile [@user]                      — Catch profile (24 h + all-time)
 a!check                                — Reply to a Pokétwo msg to manually record it
 a!fled-logs <category> <channel_id>   — Admin: route fled alerts to a channel
 a!fled-logs list                       — Admin: show current routing
@@ -37,29 +37,62 @@ OWNER_ID = None  # set via env or replace with your Discord user ID (int)
 class ProfileView(discord.ui.View):
     def __init__(
         self,
-        guild_id:  int,
-        target:    discord.Member | discord.User,
-        stats:     dict,
-        poke_list: list[dict],
+        guild_id:       int,
+        target:         discord.Member | discord.User,
+        stats:          dict,   # last 24 h
+        stats_alltime:  dict,   # all-time
+        poke_list:      list[dict],          # last 24 h
+        poke_list_all:  list[dict],          # all-time
+        reset_info:     dict,
     ):
         super().__init__(timeout=300)
-        self.guild_id  = guild_id
-        self.target    = target
-        self.stats     = stats
-        self.poke_list = poke_list
+        self.guild_id      = guild_id
+        self.target        = target
+        self.stats         = stats
+        self.stats_alltime = stats_alltime
+        self.poke_list     = poke_list
+        self.poke_list_all = poke_list_all
+        self.reset_info    = reset_info
 
     def _base_embed(self) -> discord.Embed:
+        s   = self.stats
+        sa  = self.stats_alltime
+        ri  = self.reset_info
+
+        shiny_24h  = s["shiny"]  + s["chain_shiny"]
+        shiny_all  = sa["shiny"] + sa["chain_shiny"]
+
         e = discord.Embed(
-            title=f"🎮 {self.target.display_name} — Last 24 Hours",
+            title=f"🎮 {self.target.display_name}",
             color=discord.Color.gold(),
         )
         e.set_thumbnail(url=self.target.display_avatar.url)
-        shiny_total = self.stats["shiny"] + self.stats["chain_shiny"]
-        e.add_field(name="Total Catches",  value=str(self.stats["total"]),       inline=True)
-        e.add_field(name="✨ Shiny",        value=str(shiny_total),               inline=True)
-        e.add_field(name="🔴 Gigantamax",  value=str(self.stats["gigantamax"]),  inline=True)
-        e.add_field(name="🔗 Chain Shiny", value=str(self.stats["chain_shiny"]), inline=True)
-        e.set_footer(text="Data window: last 24 hours")
+
+        # 24-h column
+        e.add_field(
+            name="📅 Last 24 Hours",
+            value=(
+                f"Catches: **{s['total']}**\n"
+                f"✨ Shiny: **{shiny_24h}**\n"
+                f"🔴 Gigantamax: **{s['gigantamax']}**\n"
+                f"🔗 Chain Shiny: **{s['chain_shiny']}**"
+            ),
+            inline=True,
+        )
+        # all-time column
+        e.add_field(
+            name="🏅 All Time",
+            value=(
+                f"Catches: **{sa['total']}**\n"
+                f"✨ Shiny: **{shiny_all}**\n"
+                f"🔴 Gigantamax: **{sa['gigantamax']}**\n"
+                f"🔗 Chain Shiny: **{sa['chain_shiny']}**"
+            ),
+            inline=True,
+        )
+
+        reset_str = db.fmt_reset(ri["resets_in_h"])
+        e.set_footer(text=f"24-hour window · {reset_str}")
         return e
 
     # ── Type Stats ────────────────────────────────────────────────────────────
@@ -158,7 +191,7 @@ class TrackerCog(commands.Cog):
         Returns ("catch", CatchEvent) | ("flee", FleeEvent) | None.
         Shared by the live listener and the manual a!check command.
         """
-        guild_id  = message.guild.id
+        guild_id   = message.guild.id
         channel_id = message.channel.id
         full_text  = message.content or ""
 
@@ -240,19 +273,23 @@ class TrackerCog(commands.Cog):
 
     @commands.command(name="profile", aliases=["pf"])
     async def profile(self, ctx: commands.Context, member: discord.Member = None):
-        """Show catch stats for the last 24 hours."""
-        target    = member or ctx.author
-        guild_id  = ctx.guild.id
-        stats     = await db.get_user_stats(guild_id, target.id)
-        poke_list = await db.get_user_pokemon_list(guild_id, target.id)
+        """Show catch stats: last 24 hours alongside all-time totals."""
+        target   = member or ctx.author
+        guild_id = ctx.guild.id
 
-        if stats["total"] == 0:
-            await ctx.reply(
-                f"No catches recorded for **{target.display_name}** in the last 24 hours."
-            )
+        stats, stats_alltime, poke_list, poke_list_all, reset_info = (
+            await db.get_user_stats(guild_id, target.id),
+            await db.get_user_stats_alltime(guild_id, target.id),
+            await db.get_user_pokemon_list(guild_id, target.id),
+            await db.get_user_pokemon_list_alltime(guild_id, target.id),
+            await db.get_window_reset_info(guild_id),
+        )
+
+        if stats_alltime["total"] == 0:
+            await ctx.reply(f"No catches recorded for **{target.display_name}** yet.")
             return
 
-        view  = ProfileView(guild_id, target, stats, poke_list)
+        view  = ProfileView(guild_id, target, stats, stats_alltime, poke_list, poke_list_all, reset_info)
         embed = view._base_embed()
         await ctx.reply(embed=embed, view=view)
 
@@ -357,8 +394,8 @@ class TrackerCog(commands.Cog):
                 return
             lines = []
             for cfg in configs:
-                ch        = self.bot.get_channel(cfg["channel_id"])
-                ch_str    = ch.mention if ch else f"`{cfg['channel_id']}`"
+                ch     = self.bot.get_channel(cfg["channel_id"])
+                ch_str = ch.mention if ch else f"`{cfg['channel_id']}`"
                 lines.append(f"**{cfg['category_key']}** → {ch_str}")
             e = discord.Embed(
                 title="Fled-log routing",
@@ -392,13 +429,12 @@ class TrackerCog(commands.Cog):
             f"✅ **{cat['name']}** fled alerts → {ch.mention if ch else f'`{ch_id}`'}"
         )
 
-
     # ── a!cleardata ───────────────────────────────────────────────────────────
 
     @commands.command(name="cleardata")
     async def cleardata(self, ctx: commands.Context):
         """
-        [Owner only] Delete all catch and flee data for this guild from the last 24 hours.
+        [Owner only] Permanently delete ALL catch and flee data for this guild.
 
         Usage: a!cleardata
         """
@@ -407,12 +443,11 @@ class TrackerCog(commands.Cog):
             await ctx.reply("❌ Only the bot owner can use this command.")
             return
 
-        # Confirmation prompt
         confirm_embed = discord.Embed(
             title="⚠️ Confirm Data Deletion",
             description=(
                 "This will permanently delete **all catches and flees** recorded "
-                "for this server in the last 24 hours.\n\n"
+                "for this server (all time — cannot be undone).\n\n"
                 "React with ✅ to confirm or ❌ to cancel."
             ),
             color=discord.Color.orange(),
