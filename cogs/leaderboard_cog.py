@@ -2,12 +2,14 @@
 cogs/leaderboard_cog.py  —  Leaderboard commands.
 
 Features:
-  • Dropdown to switch between "Last 24 Hours" and "All Time" views
-  • Dynamic Discord timestamp showing exact reset moment
-  • Clean embed layout with rank emojis and reply arrow
+  • Board-type dropdown: Catches / Shiny / Gigantamax / (Category)
+  • Time-window dropdown: Last 24 Hours / All Time
+  • Dynamic Discord timestamp for window reset
+  • Pings the user who ran the command (allowed_mentions safe)
 
 Commands:
   a!leaderboard [category]
+  a!lb          [category]
 """
 
 import time
@@ -19,29 +21,14 @@ from categories import get_category, all_keys
 from config import E
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
 def _reset_unix(resets_in_h: float) -> int:
-    """Convert hours-from-now into a Unix timestamp for Discord's <t:N:F> format."""
     return int(time.time() + resets_in_h * 3600)
 
 
-def _build_lines(entries: list[dict], include_extras: bool = True) -> list[str]:
-    lines = []
-    for i, e in enumerate(entries, 1):
-        rank  = E.rank_emoji(i)
-        name  = e["display_name"]
-        total = e["total"]
-
-        extras = []
-        if include_extras:
-            if e.get("shiny"):      extras.append(f"{E.shiny} {e['shiny']}")
-            if e.get("gigantamax"): extras.append(f"{E.gigantamax} {e['gigantamax']}")
-
-        extra_str = f"  {' '.join(extras)}" if extras else ""
-        lines.append(f"{E.reply} {rank} **{name}** — **{total}** caught{extra_str}")
-    return lines
-
-
-async def _resolve_entries(bot, guild, raw_entries, include_extras=True) -> list[dict]:
+async def _resolve_entries(bot, guild, raw_entries) -> list[dict]:
+    """Attach display_name to each raw entry dict."""
     out = []
     for e in raw_entries:
         member = guild.get_member(e["user_id"])
@@ -57,6 +44,45 @@ async def _resolve_entries(bot, guild, raw_entries, include_extras=True) -> list
     return out
 
 
+# Board-type constants
+BOARD_CATCHES    = "catches"
+BOARD_SHINY      = "shiny"
+BOARD_GIGANTAMAX = "gigantamax"
+BOARD_CATEGORY   = "category"
+
+
+def _build_lines(entries: list[dict], board: str) -> list[str]:
+    lines = []
+    for i, e in enumerate(entries, 1):
+        rank  = E.rank_emoji(i)
+        name  = e["display_name"]
+        total = e["total"]
+
+        if board == BOARD_CATCHES:
+            extras = []
+            if e.get("shiny"):      extras.append(f"{E.shiny} {e['shiny']}")
+            if e.get("gigantamax"): extras.append(f"{E.gigantamax} {e['gigantamax']}")
+            suffix = f"  {'  '.join(extras)}" if extras else ""
+            lines.append(f"{E.reply} {rank} **{name}** — **{total}** caught{suffix}")
+
+        elif board == BOARD_SHINY:
+            chain = e.get("chain_shiny", 0)
+            parts = [f"{E.shiny} **{e.get('shiny', 0)}**"]
+            if chain:
+                parts.append(f"{E.chain_shiny} **{chain}**")
+            lines.append(f"{E.reply} {rank} **{name}** — {' + '.join(parts)} shiny  *(total: {total})*")
+
+        elif board == BOARD_GIGANTAMAX:
+            lines.append(f"{E.reply} {rank} **{name}** — {E.gigantamax} **{total}**")
+
+        else:  # category
+            lines.append(f"{E.reply} {rank} **{name}** — **{total}** caught")
+
+    return lines
+
+
+# ── View ──────────────────────────────────────────────────────────────────────
+
 class LeaderboardView(discord.ui.View):
 
     def __init__(
@@ -64,6 +90,7 @@ class LeaderboardView(discord.ui.View):
         bot,
         guild:       discord.Guild,
         guild_id:    int,
+        invoker_id:  int,
         category:    dict | None,
         reset_unix:  int,
         resets_in_h: float,
@@ -72,71 +99,150 @@ class LeaderboardView(discord.ui.View):
         self.bot         = bot
         self.guild       = guild
         self.guild_id    = guild_id
+        self.invoker_id  = invoker_id
         self.category    = category
         self.reset_unix  = reset_unix
         self.resets_in_h = resets_in_h
-        self._current    = "24h"
 
-    @discord.ui.select(
-        placeholder="Switch view…",
-        options=[
-            discord.SelectOption(label="Last 24 Hours", value="24h",     emoji="📅", default=True),
-            discord.SelectOption(label="All Time",      value="alltime", emoji="🏅"),
-        ],
-    )
-    async def view_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        # State
+        self._board  = BOARD_CATEGORY if category else BOARD_CATCHES
+        self._window = "24h"
+
+        # Build selects dynamically so we can hide the board-type select
+        # when a category is active (only catch data exists per-category)
+        if not category:
+            self._add_board_select()
+        self._add_window_select()
+
+    def _add_board_select(self):
+        select = discord.ui.Select(
+            placeholder="Board type…",
+            row=0,
+            options=[
+                discord.SelectOption(
+                    label="Catches",    value=BOARD_CATCHES,
+                    emoji="📋",         default=True,
+                ),
+                discord.SelectOption(
+                    label="Shiny",      value=BOARD_SHINY,
+                    emoji=E.shiny,
+                ),
+                discord.SelectOption(
+                    label="Gigantamax", value=BOARD_GIGANTAMAX,
+                    emoji=E.gigantamax,
+                ),
+            ],
+        )
+        select.callback = self._board_callback
+        self._board_select = select
+        self.add_item(select)
+
+    def _add_window_select(self):
+        select = discord.ui.Select(
+            placeholder="Time window…",
+            row=1,
+            options=[
+                discord.SelectOption(
+                    label="Last 24 Hours", value="24h",
+                    emoji="📅",            default=True,
+                ),
+                discord.SelectOption(
+                    label="All Time",      value="alltime",
+                    emoji="🏅",
+                ),
+            ],
+        )
+        select.callback = self._window_callback
+        self._window_select = select
+        self.add_item(select)
+
+    # ── Callbacks ─────────────────────────────────────────────────────────────
+
+    async def _board_callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        chosen = select.values[0]
-        if chosen == self._current:
-            await interaction.followup.send("Already showing that view.", ephemeral=True)
+        chosen = interaction.data["values"][0]
+        if chosen == self._board:
+            await interaction.followup.send("Already showing that board.", ephemeral=True)
             return
-        self._current = chosen
-        for opt in select.options:
+        self._board = chosen
+        for opt in self._board_select.options:
             opt.default = (opt.value == chosen)
-        embed = await self._build_embed(chosen)
-        await interaction.message.edit(embed=embed, view=self)
+        await interaction.message.edit(embed=await self._build_embed(), view=self)
 
-    async def _build_embed(self, mode: str) -> discord.Embed:
-        is_24h = mode == "24h"
+    async def _window_callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        chosen = interaction.data["values"][0]
+        if chosen == self._window:
+            await interaction.followup.send("Already showing that window.", ephemeral=True)
+            return
+        self._window = chosen
+        for opt in self._window_select.options:
+            opt.default = (opt.value == chosen)
+        await interaction.message.edit(embed=await self._build_embed(), view=self)
 
-        if self.category:
-            cat_name = self.category["name"]
+    # ── Embed builder ─────────────────────────────────────────────────────────
+
+    async def _build_embed(self) -> discord.Embed:
+        is_24h  = self._window == "24h"
+        gid     = self.guild_id
+        board   = self._board
+
+        # ── Fetch data ────────────────────────────────────────────────────────
+        if board == BOARD_CATEGORY and self.category:
             raw = (
-                await db.get_category_leaderboard(self.guild_id, self.category["pokemon"])
+                await db.get_category_leaderboard(gid, self.category["pokemon"])
                 if is_24h else
-                await db.get_category_leaderboard_alltime(self.guild_id, self.category["pokemon"])
+                await db.get_category_leaderboard_alltime(gid, self.category["pokemon"])
             )
-            include_extras = False
-            base_title = f"{E.leaderboard} {cat_name} Leaderboard"
-        else:
+            title = f"{E.leaderboard} {self.category['name']} Leaderboard"
+
+        elif board == BOARD_SHINY:
             raw = (
-                await db.get_leaderboard(self.guild_id)
+                await db.get_shiny_leaderboard(gid)
                 if is_24h else
-                await db.get_leaderboard_alltime(self.guild_id)
+                await db.get_shiny_leaderboard_alltime(gid)
             )
-            include_extras = True
-            base_title = f"{E.leaderboard} Global Leaderboard"
+            title = f"{E.leaderboard} Shiny Leaderboard"
 
-        entries = await _resolve_entries(self.bot, self.guild, raw, include_extras)
-        lines   = _build_lines(entries, include_extras)
+        elif board == BOARD_GIGANTAMAX:
+            raw = (
+                await db.get_gigantamax_leaderboard(gid)
+                if is_24h else
+                await db.get_gigantamax_leaderboard_alltime(gid)
+            )
+            title = f"{E.leaderboard} {E.gigantamax} Gigantamax Leaderboard"
 
+        else:  # BOARD_CATCHES (global)
+            raw = (
+                await db.get_leaderboard(gid)
+                if is_24h else
+                await db.get_leaderboard_alltime(gid)
+            )
+            title = f"{E.leaderboard} Global Leaderboard"
+
+        entries = await _resolve_entries(self.bot, self.guild, raw)
+        lines   = _build_lines(entries, board)
+
+        # ── Window header ─────────────────────────────────────────────────────
         if is_24h:
-            header = (
+            window_header = (
                 f"> 📅 **Last 24 Hours**\n"
-                f"> Window resets <t:{self.reset_unix}:R> — <t:{self.reset_unix}:F>"
+                f"> Resets <t:{self.reset_unix}:R> — <t:{self.reset_unix}:F>"
             )
         else:
-            header = "> 🏅 **All Time** — complete catch history"
+            window_header = "> 🏅 **All Time** — complete history"
 
-        body = "\n".join(lines) if lines else "*No catches recorded yet.*"
-        description = f"{header}\n\u200b\n{body}"
+        body        = "\n".join(lines) if lines else "*No data recorded yet.*"
+        description = f"{window_header}\n\u200b\n{body}"
 
         return discord.Embed(
-            title=base_title,
+            title=title,
             description=description,
             color=discord.Color.gold(),
         )
 
+
+# ── Cog ───────────────────────────────────────────────────────────────────────
 
 class LeaderboardCog(commands.Cog):
 
@@ -146,10 +252,10 @@ class LeaderboardCog(commands.Cog):
     @commands.command(name="leaderboard", aliases=["lb"])
     async def leaderboard(self, ctx: commands.Context, category: str = None):
         """
-        Show the catch leaderboard. Use the dropdown to switch 24h ↔ all-time.
+        Show the leaderboard with board-type and time-window dropdowns.
 
         Usage:
-          a!leaderboard              — global leaderboard
+          a!leaderboard              — global (catches / shiny / gigantamax)
           a!leaderboard rares        — rares category leaderboard
         """
         guild_id = ctx.guild.id
@@ -167,9 +273,24 @@ class LeaderboardCog(commands.Cog):
         reset_info = await db.get_window_reset_info(guild_id)
         reset_unix = _reset_unix(reset_info["resets_in_h"])
 
-        view  = LeaderboardView(self.bot, ctx.guild, guild_id, cat, reset_unix, reset_info["resets_in_h"])
-        embed = await view._build_embed("24h")
-        await ctx.reply(embed=embed, view=view)
+        view  = LeaderboardView(
+            bot         = self.bot,
+            guild       = ctx.guild,
+            guild_id    = guild_id,
+            invoker_id  = ctx.author.id,
+            category    = cat,
+            reset_unix  = reset_unix,
+            resets_in_h = reset_info["resets_in_h"],
+        )
+        embed = await view._build_embed()
+
+        # Ping the invoker — allowed_mentions set to only allow the user mention
+        await ctx.send(
+            content=ctx.author.mention,
+            embed=embed,
+            view=view,
+            allowed_mentions=discord.AllowedMentions(users=[ctx.author], everyone=False, roles=False),
+        )
 
 
 async def setup(bot: commands.Bot):
