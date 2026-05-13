@@ -826,15 +826,11 @@ class AutopauseCog(commands.Cog, name="AutopauseCog"):
         type_label, colour = type_meta.get(ping_type, ("❓ Unknown", discord.Color.blurple()))
 
         # ── Pokémon sprite from PokéAPI (best-effort) ─────────────────────────
-        poke_info = pokedata.get(pokemon) or pokedata.get(_get_base_pokemon(pokemon))
-        sprite_url = None
-        if poke_info:
-            dex_num = poke_info.get("dex") or poke_info.get("id")
-            if dex_num:
-                sprite_url = (
-                    f"https://raw.githubusercontent.com/PokeAPI/sprites/master/"
-                    f"sprites/pokemon/{dex_num}.png"
-                )
+        # Use pokedata CDN mapping; fall back to base Pokémon name if form not mapped
+        sprite_url = (
+            pokedata.cdn_image_url(pokemon)
+            or pokedata.cdn_image_url(_get_base_pokemon(pokemon))
+        )
 
         # ── Find users who have this Pokémon in their collection ──────────────
         user_ids = await _find_users_with_pokemon(guild.id, pokemon)
@@ -1256,10 +1252,10 @@ class AutopauseCog(commands.Cog, name="AutopauseCog"):
         valid   = []
         invalid = []
         for name in raw:
-            # Capitalise first letter for canonical matching
-            canonical = name.capitalize()
-            if pokedata.get(canonical) or pokedata.get(name):
-                valid.append(pokedata.get(canonical) and canonical or name)
+            # pokedata.get() lowercases internally; entry["name"] gives CSV-canonical casing
+            entry = pokedata.get(name)
+            if entry:
+                valid.append(entry["name"])
             else:
                 invalid.append(name)
 
