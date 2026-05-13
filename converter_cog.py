@@ -270,6 +270,39 @@ class ConverterCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._cache: OrderedDict[int, list] = OrderedDict()
+        # guild_id → set of allowed channel IDs (loaded from DB on first use)
+        self._allowed_channels: dict[int, set[int]] = {}
+
+    # ── Allowed-channels helpers ──────────────────────────────────────────────
+
+    async def _load_allowed(self, guild_id: int) -> set[int]:
+        """Load allowed channels from DB into cache and return the set."""
+        import db
+        doc = await db.get_db().converter_channels.find_one({"guild_id": guild_id})
+        channels: set[int] = set(doc.get("channel_ids", [])) if doc else set()
+        self._allowed_channels[guild_id] = channels
+        return channels
+
+    async def _get_allowed(self, guild_id: int) -> set[int]:
+        """Return cached allowed channels, loading from DB if not yet cached."""
+        if guild_id not in self._allowed_channels:
+            return await self._load_allowed(guild_id)
+        return self._allowed_channels[guild_id]
+
+    async def _save_allowed(self, guild_id: int, channels: set[int]) -> None:
+        """Persist allowed channels to DB and update cache."""
+        import db
+        await db.get_db().converter_channels.update_one(
+            {"guild_id": guild_id},
+            {"$set": {"channel_ids": list(channels)}},
+            upsert=True,
+        )
+        self._allowed_channels[guild_id] = channels
+
+    async def _is_channel_allowed(self, guild_id: int, channel_id: int) -> bool:
+        """Return True if no restrictions set (allow all) or channel is in the list."""
+        allowed = await self._get_allowed(guild_id)
+        return len(allowed) == 0 or channel_id in allowed
 
     def _store(self, message_id: int, components: list):
         if message_id in self._cache:
@@ -351,6 +384,11 @@ class ConverterCog(commands.Cog):
         channel = self.bot.get_channel(channel_id)
         if channel is None:
             print(f"  → SKIP: channel {channel_id} not in bot cache")
+            return
+
+        guild_id = int(payload.get("guild_id", 0))
+        if guild_id and not await self._is_channel_allowed(guild_id, channel_id):
+            print(f"  → SKIP: channel {channel_id} not in allowed list for guild {guild_id}")
             return
 
         try:
@@ -444,6 +482,101 @@ class ConverterCog(commands.Cog):
             await interaction.followup.send(content=intro, embeds=embeds)
         except Exception as e:
             await interaction.followup.send(f"❌ Error:\n```\n{type(e).__name__}: {e}\n```")
+
+
+    # ── Channel restriction commands ──────────────────────────────────────────
+
+    @commands.group(name="convertch", aliases=["cch"], invoke_without_command=True)
+    @commands.has_permissions(manage_guild=True)
+    async def convertch(self, ctx: commands.Context):
+        """Manage which channels auto-conversion is allowed in."""
+        await ctx.send_help(ctx.command)
+
+    @convertch.command(name="list")
+    @commands.has_permissions(manage_guild=True)
+    async def cch_list(self, ctx: commands.Context):
+        """Show allowed channels. Empty = conversion allowed everywhere."""
+        allowed = await self._get_allowed(ctx.guild.id)
+        if not allowed:
+            await ctx.reply("📋 No channel restrictions set — conversion runs in **all channels**.")
+            return
+        mentions = []
+        for cid in sorted(allowed):
+            ch = ctx.guild.get_channel(cid)
+            mentions.append(ch.mention if ch else f"`{cid}` *(deleted)*")
+        e = discord.Embed(
+            title="📋 Converter Allowed Channels",
+            description="\n".join(mentions),
+            color=discord.Color.blurple(),
+        )
+        e.set_footer(text=f"{len(allowed)} channel(s) — conversion restricted to these only")
+        await ctx.reply(embed=e)
+
+    @convertch.command(name="add")
+    @commands.has_permissions(manage_guild=True)
+    async def cch_add(self, ctx: commands.Context, *channels: discord.TextChannel):
+        """Add one or more channels to the allowed list.
+        Usage: a!convertch add #chan1 #chan2"""
+        if not channels:
+            await ctx.reply("❌ Please mention at least one channel.")
+            return
+        allowed = await self._get_allowed(ctx.guild.id)
+        added = []
+        already = []
+        for ch in channels:
+            if ch.id in allowed:
+                already.append(ch.mention)
+            else:
+                allowed.add(ch.id)
+                added.append(ch.mention)
+        await self._save_allowed(ctx.guild.id, allowed)
+        parts = []
+        if added:
+            parts.append(f"✅ Added: {', '.join(added)}")
+        if already:
+            parts.append(f"ℹ️ Already in list: {', '.join(already)}")
+        await ctx.reply("\n".join(parts))
+
+    @convertch.command(name="remove")
+    @commands.has_permissions(manage_guild=True)
+    async def cch_remove(self, ctx: commands.Context, *channels: discord.TextChannel):
+        """Remove one or more channels from the allowed list.
+        Usage: a!convertch remove #chan1 #chan2"""
+        if not channels:
+            await ctx.reply("❌ Please mention at least one channel.")
+            return
+        allowed = await self._get_allowed(ctx.guild.id)
+        removed = []
+        missing = []
+        for ch in channels:
+            if ch.id in allowed:
+                allowed.discard(ch.id)
+                removed.append(ch.mention)
+            else:
+                missing.append(ch.mention)
+        await self._save_allowed(ctx.guild.id, allowed)
+        parts = []
+        if removed:
+            parts.append(f"✅ Removed: {', '.join(removed)}")
+        if missing:
+            parts.append(f"ℹ️ Not in list: {', '.join(missing)}")
+        if not allowed:
+            parts.append("⚠️ List is now empty — conversion will run in **all channels**.")
+        await ctx.reply("\n".join(parts))
+
+    @convertch.command(name="clear")
+    @commands.has_permissions(manage_guild=True)
+    async def cch_clear(self, ctx: commands.Context):
+        """Clear all channel restrictions — conversion will run everywhere again."""
+        await self._save_allowed(ctx.guild.id, set())
+        await ctx.reply("🗑️ Channel restrictions cleared — conversion is now allowed in **all channels**.")
+
+    @convertch.error
+    async def cch_error(self, ctx: commands.Context, error):
+        if isinstance(error, commands.MissingPermissions):
+            await ctx.reply("❌ You need **Manage Guild** permission to use this.")
+        else:
+            raise error
 
 
 async def setup(bot: commands.Bot):
