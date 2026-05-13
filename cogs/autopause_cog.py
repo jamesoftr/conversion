@@ -834,21 +834,18 @@ class AutopauseCog(commands.Cog, name="AutopauseCog"):
 
         # ── Find users who have this Pokémon in their collection ──────────────
         user_ids = await _find_users_with_pokemon(guild.id, pokemon)
-        # Also check base name in case users stored just the base
-        base = _get_base_pokemon(pokemon)
-        if base.lower() != pokemon.lower():
-            base_user_ids = await _find_users_with_pokemon(guild.id, base)
-            # Deduplicate while preserving order
-            seen = set(user_ids)
-            for uid in base_user_ids:
-                if uid not in seen:
-                    user_ids.append(uid)
-                    seen.add(uid)
 
         # Only keep user_ids that are still members of the guild
+        # fetch_member() is used as fallback because get_member() fails when
+        # the member isn't in the bot's local cache (common in large servers)
         ping_mentions: list[str] = []
         for uid in user_ids:
             member = guild.get_member(uid)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(uid)
+                except (discord.NotFound, discord.HTTPException):
+                    member = None
             if member:
                 ping_mentions.append(member.mention)
 
