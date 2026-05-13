@@ -28,10 +28,27 @@ a!autopause setreminder <seconds>       — reminder delay (must be between lock
 a!autopause setrole rare <@role>        — reminder role for rare pings
 a!autopause setrole regional <@role>    — reminder role for regional pings
 a!autopause setbot <user_id>            — set which bot to listen to (NAMING_BOT)
+a!autopause setlogchannel #channel      — set channel where lock logs are posted
 
 View commands  (anyone)
 ────────────────────────
 a!locked                                — show currently locked channels
+
+Collection / ping commands  (anyone)
+─────────────────────────────────────
+a!pings add <Pokemon names…>            — add Pokémon to your personal ping collection
+a!pings remove <Pokemon names…>         — remove Pokémon from your collection
+a!pings clear                           — clear your entire collection
+a!pings list                            — show your current collection
+
+When a channel is locked, anyone who has that Pokémon in their collection
+will be @mentioned at the top of the lock-log embed posted to the log channel.
+
+Collections used (added to db.py helpers at bottom)
+────────────────────────────────────────────────────
+autopause_config   — per-guild settings  (log_channel_id field added)
+locked_channels    — currently locked channels
+user_pings         — per-guild per-user Pokémon ping collections
 """
 
 import asyncio
@@ -124,6 +141,93 @@ async def _get_locked_entry(guild_id: int, channel_id: int) -> dict | None:
     return await db.get_db().locked_channels.find_one(
         {"guild_id": guild_id, "channel_id": channel_id}
     )
+
+
+# ── User ping-collection helpers ──────────────────────────────────────────────
+
+async def _get_user_pings(guild_id: int, user_id: int) -> list[str]:
+    """Return the list of Pokémon names a user is tracking in this guild."""
+    doc = await db.get_db().user_pings.find_one(
+        {"guild_id": guild_id, "user_id": user_id}
+    )
+    return doc.get("pokemon", []) if doc else []
+
+
+async def _add_user_pings(guild_id: int, user_id: int, names: list[str]) -> list[str]:
+    """
+    Add Pokémon names (case-insensitive dedup) to the user's collection.
+    Returns the list of names that were actually added (not already present).
+    """
+    doc = await db.get_db().user_pings.find_one(
+        {"guild_id": guild_id, "user_id": user_id}
+    )
+    existing: list[str] = doc.get("pokemon", []) if doc else []
+    existing_lower = {p.lower() for p in existing}
+
+    added = []
+    for name in names:
+        if name.lower() not in existing_lower:
+            existing.append(name)
+            existing_lower.add(name.lower())
+            added.append(name)
+
+    await db.get_db().user_pings.update_one(
+        {"guild_id": guild_id, "user_id": user_id},
+        {"$set": {"pokemon": existing}},
+        upsert=True,
+    )
+    return added
+
+
+async def _remove_user_pings(guild_id: int, user_id: int, names: list[str]) -> list[str]:
+    """
+    Remove Pokémon names from the user's collection.
+    Returns the list of names that were actually removed.
+    """
+    doc = await db.get_db().user_pings.find_one(
+        {"guild_id": guild_id, "user_id": user_id}
+    )
+    existing: list[str] = doc.get("pokemon", []) if doc else []
+    names_lower = {n.lower() for n in names}
+
+    removed = [p for p in existing if p.lower() in names_lower]
+    remaining = [p for p in existing if p.lower() not in names_lower]
+
+    await db.get_db().user_pings.update_one(
+        {"guild_id": guild_id, "user_id": user_id},
+        {"$set": {"pokemon": remaining}},
+        upsert=True,
+    )
+    return removed
+
+
+async def _clear_user_pings(guild_id: int, user_id: int) -> int:
+    """Clear all Pokémon from a user's collection. Returns count removed."""
+    doc = await db.get_db().user_pings.find_one(
+        {"guild_id": guild_id, "user_id": user_id}
+    )
+    count = len(doc.get("pokemon", [])) if doc else 0
+    await db.get_db().user_pings.update_one(
+        {"guild_id": guild_id, "user_id": user_id},
+        {"$set": {"pokemon": []}},
+        upsert=True,
+    )
+    return count
+
+
+async def _find_users_with_pokemon(guild_id: int, pokemon: str) -> list[int]:
+    """
+    Return a list of user_ids who have `pokemon` in their collection.
+    Matching is case-insensitive against both the exact name and base name.
+    """
+    pokemon_lower = pokemon.lower()
+    cursor = db.get_db().user_pings.find({"guild_id": guild_id})
+    docs = await cursor.to_list(None)
+    return [
+        doc["user_id"]
+        for doc in docs
+        if any(p.lower() == pokemon_lower for p in doc.get("pokemon", []))
+    ]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -626,11 +730,24 @@ class AutopauseCog(commands.Cog, name="AutopauseCog"):
             )
 
             # Send notice with persistent unlock button
+            lock_msg = None
             try:
                 view = UnlockView()
-                await channel.send("\n".join(lock_parts), view=view)
+                lock_msg = await channel.send("\n".join(lock_parts), view=view)
             except discord.Forbidden:
                 print(f"[autopause] _schedule_lock: could not send lock message in #{channel.name}")
+
+            # ── Send lock-log embed to the log channel ────────────────────────
+            await self._send_lock_log(
+                guild=guild,
+                channel=channel,
+                pokemon=pokemon,
+                ping_type=ping_type,
+                trigger_msg=trigger_msg,
+                lock_msg=lock_msg,
+                unlock_time=unlock_time,
+                cfg=cfg,
+            )
 
             # Schedule reminder
             reminder_delay = cfg.get("autoreminder_delay")
@@ -671,6 +788,130 @@ class AutopauseCog(commands.Cog, name="AutopauseCog"):
         finally:
             # Clean up the lock task tracking when it completes
             self._clear_task(key)
+
+    # ── Lock-log embed ────────────────────────────────────────────────────────
+
+    async def _send_lock_log(
+        self,
+        *,
+        guild:       discord.Guild,
+        channel:     discord.TextChannel,
+        pokemon:     str,
+        ping_type:   str,
+        trigger_msg: discord.Message,
+        lock_msg,
+        unlock_time,
+        cfg:         dict,
+    ):
+        """
+        Post a rich embed to the configured log channel whenever a channel is
+        locked.  At the top, mentions every user who has `pokemon` in their
+        personal ping collection.  Includes jump buttons.
+        """
+        log_channel_id = cfg.get("log_channel_id")
+        if not log_channel_id:
+            return   # no log channel configured
+
+        log_channel = guild.get_channel(log_channel_id)
+        if log_channel is None:
+            print(f"[autopause] _send_lock_log: log channel {log_channel_id} not found")
+            return
+
+        # ── Colour / label per type ───────────────────────────────────────────
+        type_meta = {
+            "rare":     ("🌟 Rare",     discord.Color.red()),
+            "regional": ("🗺️ Regional", discord.Color.purple()),
+            "custom":   ("⭐ Custom",   discord.Color.gold()),
+        }
+        type_label, colour = type_meta.get(ping_type, ("❓ Unknown", discord.Color.blurple()))
+
+        # ── Pokémon sprite from PokéAPI (best-effort) ─────────────────────────
+        poke_info = pokedata.get(pokemon) or pokedata.get(_get_base_pokemon(pokemon))
+        sprite_url = None
+        if poke_info:
+            dex_num = poke_info.get("dex") or poke_info.get("id")
+            if dex_num:
+                sprite_url = (
+                    f"https://raw.githubusercontent.com/PokeAPI/sprites/master/"
+                    f"sprites/pokemon/{dex_num}.png"
+                )
+
+        # ── Find users who have this Pokémon in their collection ──────────────
+        user_ids = await _find_users_with_pokemon(guild.id, pokemon)
+        # Also check base name in case users stored just the base
+        base = _get_base_pokemon(pokemon)
+        if base.lower() != pokemon.lower():
+            base_user_ids = await _find_users_with_pokemon(guild.id, base)
+            # Deduplicate while preserving order
+            seen = set(user_ids)
+            for uid in base_user_ids:
+                if uid not in seen:
+                    user_ids.append(uid)
+                    seen.add(uid)
+
+        # Only keep user_ids that are still members of the guild
+        ping_mentions: list[str] = []
+        for uid in user_ids:
+            member = guild.get_member(uid)
+            if member:
+                ping_mentions.append(member.mention)
+
+        # ── Build the embed ───────────────────────────────────────────────────
+        embed = discord.Embed(
+            title=f"🔒 Channel Locked — {pokemon}",
+            color=colour,
+        )
+        embed.add_field(name="Type",    value=type_label,       inline=True)
+        embed.add_field(name="Channel", value=channel.mention,  inline=True)
+        if unlock_time:
+            unlock_ts = int(unlock_time.timestamp())
+            embed.add_field(
+                name="Auto-unlock",
+                value=f"<t:{unlock_ts}:R>",
+                inline=True,
+            )
+
+        if sprite_url:
+            embed.set_thumbnail(url=sprite_url)
+
+        embed.set_footer(text="Locked at")
+        embed.timestamp = discord.utils.utcnow()
+
+        # ── Build view with jump buttons ──────────────────────────────────────
+        view = discord.ui.View(timeout=None)
+        view.add_item(discord.ui.Button(
+            label="Jump to Spawn",
+            style=discord.ButtonStyle.link,
+            url=trigger_msg.jump_url,
+            emoji="🔍",
+        ))
+        if lock_msg is not None:
+            view.add_item(discord.ui.Button(
+                label="Jump to Lock Notice",
+                style=discord.ButtonStyle.link,
+                url=lock_msg.jump_url,
+                emoji="🔒",
+            ))
+
+        # ── Compose the message content (pings sit above the embed) ──────────
+        content = None
+        if ping_mentions:
+            ping_str = " ".join(ping_mentions)
+            content = f"📣 **{pokemon}** spotted! {ping_str}"
+
+        try:
+            await log_channel.send(
+                content=content,
+                embed=embed,
+                view=view,
+                allowed_mentions=discord.AllowedMentions(users=True),
+            )
+            print(f"[autopause] _send_lock_log: log sent to #{log_channel.name} "
+                  f"(pinged {len(ping_mentions)} user(s))")
+        except discord.Forbidden:
+            print(f"[autopause] _send_lock_log: Forbidden — cannot send to #{log_channel.name}")
+        except Exception as e:
+            print(f"[autopause] _send_lock_log: error: {type(e).__name__}: {e}")
 
     # ── Lock / unlock channel ─────────────────────────────────────────────────
 
@@ -884,6 +1125,13 @@ class AutopauseCog(commands.Cog, name="AutopauseCog"):
         e.add_field(name="Reminder delay",   value=_delay("autoreminder_delay"),    inline=True)
         e.add_field(name="Rare role",        value=_role("reminder_role_rare"),     inline=True)
         e.add_field(name="Regional role",    value=_role("reminder_role_regional"), inline=True)
+        log_ch_id = cfg.get("log_channel_id")
+        if log_ch_id:
+            log_ch = ctx.guild.get_channel(log_ch_id)
+            log_ch_str = log_ch.mention if log_ch else f"`{log_ch_id}` *(not found)*"
+        else:
+            log_ch_str = "*not set*"
+        e.add_field(name="Lock-log channel", value=log_ch_str, inline=False)
         await ctx.reply(embed=e)
 
     @autopause.command(name="setlock")
@@ -964,6 +1212,120 @@ class AutopauseCog(commands.Cog, name="AutopauseCog"):
         """Set the Naming Bot user ID to listen to."""
         await _set_cfg(ctx.guild.id, naming_bot_id=bot_id)
         await ctx.reply(f"✅ Naming bot set to `{bot_id}`.")
+
+    @autopause.command(name="setlogchannel")
+    @commands.has_permissions(manage_guild=True)
+    async def ap_setlogchannel(self, ctx: commands.Context, channel: discord.TextChannel):
+        """Set the channel where lock-log embeds are posted."""
+        await _set_cfg(ctx.guild.id, log_channel_id=channel.id)
+        await ctx.reply(
+            f"✅ Lock-log channel set to {channel.mention}. "
+            f"Embeds will be posted there every time a channel is locked."
+        )
+
+    @autopause.command(name="removelogchannel")
+    @commands.has_permissions(manage_guild=True)
+    async def ap_removelogchannel(self, ctx: commands.Context):
+        """Remove / disable the lock-log channel."""
+        await _set_cfg(ctx.guild.id, log_channel_id=None)
+        await ctx.reply("✅ Lock-log channel removed. No logs will be sent.")
+
+    # ── a!pings ───────────────────────────────────────────────────────────────
+
+    @commands.group(name="pings", aliases=["ping", "col"], invoke_without_command=True)
+    async def pings(self, ctx: commands.Context):
+        """
+        Manage your personal Pokémon ping collection.
+        You'll be @mentioned in the log channel when a Pokémon you track gets locked.
+        """
+        await ctx.send_help(ctx.command)
+
+    @pings.command(name="add")
+    async def pings_add(self, ctx: commands.Context, *, pokemon_names: str):
+        """
+        Add one or more Pokémon to your collection.
+        Separate multiple names with commas or spaces.
+        Example: a!pings add Ralts, Dratini, Larvitar
+        """
+        # Split on commas first, then whitespace — strip each token
+        raw = [n.strip() for part in pokemon_names.split(",") for n in part.split() if n.strip()]
+        if not raw:
+            await ctx.reply("❌ Please provide at least one Pokémon name.")
+            return
+
+        valid   = []
+        invalid = []
+        for name in raw:
+            # Capitalise first letter for canonical matching
+            canonical = name.capitalize()
+            if pokedata.get(canonical) or pokedata.get(name):
+                valid.append(pokedata.get(canonical) and canonical or name)
+            else:
+                invalid.append(name)
+
+        lines = []
+        if valid:
+            added = await _add_user_pings(ctx.guild.id, ctx.author.id, valid)
+            already = [n for n in valid if n not in added]
+            if added:
+                lines.append(f"✅ Added: **{', '.join(added)}**")
+            if already:
+                lines.append(f"ℹ️ Already in collection: **{', '.join(already)}**")
+        if invalid:
+            lines.append(f"❌ Not found in Pokédex: **{', '.join(invalid)}**")
+
+        await ctx.reply("\n".join(lines) if lines else "Nothing to do.")
+
+    @pings.command(name="remove")
+    async def pings_remove(self, ctx: commands.Context, *, pokemon_names: str):
+        """
+        Remove one or more Pokémon from your collection.
+        Example: a!pings remove Dratini, Larvitar
+        """
+        raw = [n.strip() for part in pokemon_names.split(",") for n in part.split() if n.strip()]
+        if not raw:
+            await ctx.reply("❌ Please provide at least one Pokémon name.")
+            return
+
+        removed = await _remove_user_pings(ctx.guild.id, ctx.author.id, raw)
+        not_found = [n for n in raw if n.lower() not in {r.lower() for r in removed}]
+
+        lines = []
+        if removed:
+            lines.append(f"✅ Removed: **{', '.join(removed)}**")
+        if not_found:
+            lines.append(f"ℹ️ Not in your collection: **{', '.join(not_found)}**")
+        await ctx.reply("\n".join(lines) if lines else "Nothing to do.")
+
+    @pings.command(name="clear")
+    async def pings_clear(self, ctx: commands.Context):
+        """Clear your entire Pokémon ping collection."""
+        count = await _clear_user_pings(ctx.guild.id, ctx.author.id)
+        if count:
+            await ctx.reply(f"🗑️ Cleared **{count}** Pokémon from your collection.")
+        else:
+            await ctx.reply("ℹ️ Your collection is already empty.")
+
+    @pings.command(name="list")
+    async def pings_list(self, ctx: commands.Context):
+        """Show your current Pokémon ping collection."""
+        pokemon = await _get_user_pings(ctx.guild.id, ctx.author.id)
+        if not pokemon:
+            await ctx.reply(
+                "📋 Your collection is empty.\n"
+                "Use `a!pings add <name>` to add Pokémon you want to be pinged for."
+            )
+            return
+
+        e = discord.Embed(
+            title=f"📋 {ctx.author.display_name}'s Ping Collection",
+            description="\n".join(f"• {p}" for p in sorted(pokemon)),
+            color=discord.Color.blurple(),
+        )
+        e.set_footer(text=f"{len(pokemon)} Pokémon • a!pings add/remove/clear to manage")
+        e.set_thumbnail(url=ctx.author.display_avatar.url)
+        await ctx.reply(embed=e)
+
 
     # ── a!locked ──────────────────────────────────────────────────────────────
 
