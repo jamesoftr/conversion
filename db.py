@@ -54,6 +54,30 @@ def today_label() -> str:
 
 # ── One-time index setup (call at startup) ────────────────────────────────────
 
+    """
+    db_additions.py
+    ───────────────
+    Paste the `ensure_indexes` replacement into db.py,
+    replacing the existing function.
+
+    No other changes to db.py are needed — all Mongo calls for
+    autopause_config and locked_channels live directly in autopause_cog.py.
+    """
+
+    # ── Replace the existing ensure_indexes() in db.py with this ─────────────────
+
+"""
+db_additions.py
+───────────────
+Paste the `ensure_indexes` replacement into db.py,
+replacing the existing function.
+
+No other changes to db.py are needed — all Mongo calls for
+autopause_config and locked_channels live directly in autopause_cog.py.
+"""
+
+# ── Replace the existing ensure_indexes() in db.py with this ─────────────────
+
 async def ensure_indexes() -> None:
     """
     Create query indexes.
@@ -67,6 +91,9 @@ async def ensure_indexes() -> None:
     await db.catches.create_index([("guild_id", 1), ("user_id",   1), ("timestamp", -1)])
     await db.flees.create_index(  [("guild_id", 1), ("timestamp", -1)])
 
+    # Autopause indexes
+    await db.autopause_config.create_index([("guild_id", 1)], unique=True)
+    await db.locked_channels.create_index( [("guild_id", 1), ("channel_id", 1)], unique=True)
 
 # ── Catches ───────────────────────────────────────────────────────────────────
 
