@@ -95,6 +95,9 @@ async def ensure_indexes() -> None:
     await db.autopause_config.create_index([("guild_id", 1)], unique=True)
     await db.locked_channels.create_index( [("guild_id", 1), ("channel_id", 1)], unique=True)
 
+    # Add to ensure_indexes():
+    await db.custom_pokemon_lists.create_index([("guild_id", 1)], unique=True)
+
 # ── Catches ───────────────────────────────────────────────────────────────────
 
 async def record_catch(
@@ -451,3 +454,48 @@ async def clear_guild_data(guild_id: int) -> dict:
         "catches": catch_result.deleted_count,
         "flees":   flee_result.deleted_count,
     }
+
+
+# Add this to db.py — new collection helpers for custom pokemon lists
+
+async def get_custom_pokemon_list(guild_id: int) -> list[str]:
+    """Get the list of custom Pokémon that trigger autolocks for this guild."""
+    doc = await get_db().custom_pokemon_lists.find_one({"guild_id": guild_id})
+    return doc.get("pokemon_list", []) if doc else []
+
+
+async def add_custom_pokemon(guild_id: int, pokemon: str) -> bool:
+    """Add a Pokémon to the custom list. Returns True if added, False if already exists."""
+    pokemon_lower = pokemon.lower()
+    doc = await get_db().custom_pokemon_lists.find_one({"guild_id": guild_id})
+
+    if doc and pokemon_lower in [p.lower() for p in doc.get("pokemon_list", [])]:
+        return False  # Already in list
+
+    await get_db().custom_pokemon_lists.update_one(
+        {"guild_id": guild_id},
+        {"$addToSet": {"pokemon_list": pokemon}},
+        upsert=True,
+    )
+    return True
+
+
+async def remove_custom_pokemon(guild_id: int, pokemon: str) -> bool:
+    """Remove a Pokémon from the custom list. Returns True if removed, False if not found."""
+    pokemon_lower = pokemon.lower()
+    doc = await get_db().custom_pokemon_lists.find_one({"guild_id": guild_id})
+
+    if not doc or pokemon_lower not in [p.lower() for p in doc.get("pokemon_list", [])]:
+        return False  # Not in list
+
+    await get_db().custom_pokemon_lists.update_one(
+        {"guild_id": guild_id},
+        {"$pull": {"pokemon_list": {"$regex": f"^{pokemon}$", "$options": "i"}}},
+    )
+    return True
+
+
+async def clear_custom_pokemon_list(guild_id: int) -> None:
+    """Clear the entire custom Pokémon list for a guild."""
+    await get_db().custom_pokemon_lists.delete_one({"guild_id": guild_id})
+
