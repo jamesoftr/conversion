@@ -16,6 +16,7 @@ bot = commands.Bot(
     help_command=None,
     intents=intents,
     enable_debug_events=True,
+    case_insensitive=True,   # ← add this
 )
 
 
@@ -30,12 +31,13 @@ async def main():
     pokedata.load()
     await db.ensure_indexes()   # create query indexes (idempotent)
     async with bot:
-        await bot.load_extension("converter_cog")
         await bot.load_extension("cogs.help_cog")
+        await bot.load_extension("converter_cog")
         await bot.load_extension("cogs.tracker_cog")
         await bot.load_extension("cogs.leaderboard_cog")
         await bot.load_extension("cogs.calculator_cog")
         await bot.load_extension("cogs.category_cog")
+        await bot.load_extension("cogs.autopause_cog")   # ← NEW
         await bot.start(TOKEN)
 
 
