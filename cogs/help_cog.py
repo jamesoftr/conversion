@@ -1,179 +1,378 @@
 """
-cogs/help_cog.py  —  Custom help command for the Pokémon tracker bot.
+cogs/help_cog.py  —  Help command.
 
-Commands
-────────
-a!help [command]   — Show all commands, or details for a specific one
+a!help                  — Overview page with a button for each section
+a!help tracker          — Jump straight to Tracker
+a!help leaderboard      — Jump straight to Leaderboard
+a!help category         — Jump straight to Category Stats
+a!help autopause        — Jump straight to Autopause
+a!help converter        — Jump straight to Converter
+
+Navigation
+──────────
+Overview page  : one button per section (clicks open that section page)
+Section pages  : 🏠 Home button returns to overview
+                 ◀ Prev / Next ▶ to walk between section pages
 """
 
 import discord
 from discord.ext import commands
 
 
-# ── Command reference ─────────────────────────────────────────────────────────
-# Each entry: (name, aliases, usage, description, admin_only)
+# ─────────────────────────────────────────────────────────────────────────────
+# Data
+# ─────────────────────────────────────────────────────────────────────────────
 
-_COMMANDS = [
-    # ── Tracker ───────────────────────────────────────────────────────────────
+# PAGE_INDEX = 0  →  overview (generated from SECTIONS)
+# PAGE_INDEX = 1  →  SECTIONS[0]   (Tracker)
+# PAGE_INDEX = 2  →  SECTIONS[1]   (Leaderboard)
+# etc.
+# So section page index = section list index + 1
+
+SECTIONS = [
     {
-        "name":       "profile",
-        "aliases":    ["pf"],
-        "usage":      "a!profile [@user]",
-        "short":      "Catch profile for the last 24 hours.",
-        "long": (
-            "Displays catch stats (total, shiny, gigantamax, chain shiny) for yourself "
-            "or another member.\n\n"
-            "The embed includes buttons for:\n"
-            "🔬 **Type Stats** — breakdown of types caught\n"
-            "🗺️ **Region Stats** — breakdown by Pokédex region\n"
-            "📋 **Pokémon Caught** — paginated list of every species caught"
-        ),
-        "admin": False,
+        "key":    "tracker",
+        "title":  "📋 Tracker",
+        "emoji":  "📋",
+        "color":  discord.Color.gold(),
+        "summary": "Catch & flee tracking, user profiles, fled-log routing.",
+        "fields": [
+            (
+                "`a!profile` / `a!pf`  `[@user]`",
+                "View your catch stats (today + all-time), type breakdown, region "
+                "breakdown, and full Pokémon list. Mention a user to see theirs.",
+            ),
+            (
+                "`a!check`  *(Admin)*",
+                "Reply to a Pokétwo message to **manually record** a catch or flee "
+                "that the bot missed.",
+            ),
+            (
+                "`a!fled-logs <category> <#channel>`  *(Admin)*",
+                "Route fled-alerts for a category to a specific channel.\n"
+                "e.g. `a!fled-logs rares #rare-logs`",
+            ),
+            (
+                "`a!fled-logs list`  *(Admin)*",
+                "Show the current fled-log channel routing for this server.",
+            ),
+            (
+                "`a!cleardata`  *(Bot owner)*",
+                "Permanently delete **all** catch and flee records for this server. "
+                "Asks for confirmation first.",
+            ),
+        ],
     },
     {
-        "name":       "check",
-        "aliases":    [],
-        "usage":      "a!check  (reply to a Pokétwo message)",
-        "short":      "Manually record a Pokétwo catch or flee.",
-        "long": (
-            "Reply to any Pokétwo catch congratulations or fled embed message, "
-            "then run `a!check` to add it to the database retroactively.\n\n"
-            "Useful if the bot was offline when an event occurred."
-        ),
-        "admin": True,
+        "key":    "leaderboard",
+        "title":  "🏆 Leaderboard",
+        "emoji":  "🏆",
+        "color":  discord.Color.blurple(),
+        "summary": "Global and category catch leaderboards with time-window toggles.",
+        "fields": [
+            (
+                "`a!leaderboard` / `a!lb`",
+                "Show the **global** leaderboard. Use the dropdown to switch between "
+                "Catches / Shiny / Gigantamax boards, and Today / All Time windows.",
+            ),
+            (
+                "`a!leaderboard <category>` / `a!lb <category>`",
+                "Show the leaderboard filtered to a specific Pokémon category.\n"
+                "e.g. `a!lb rares`  •  `a!lb regionals`",
+            ),
+        ],
     },
     {
-        "name":       "fled-logs",
-        "aliases":    [],
-        "usage":      "a!fled-logs <category> <channel_id>\na!fled-logs list",
-        "short":      "Configure fled-alert routing per category.",
-        "long": (
-            "Routes fled-alert embeds for a category to a specific channel.\n\n"
-            "`a!fled-logs <category> <channel_id>` — set or update routing\n"
-            "`a!fled-logs list` — show the current routing for this server\n\n"
-            "Use `a!help catstat` to see available category names."
-        ),
-        "admin": True,
+        "key":    "category",
+        "title":  "📊 Category Stats",
+        "emoji":  "📊",
+        "color":  discord.Color.teal(),
+        "summary": "Per-category spawn, catch, and flee statistics.",
+        "fields": [
+            (
+                "`a!catstat <category>` / `a!cs` / `a!categorystat`",
+                "Show spawned / caught / fled counts and catch rate for a Pokémon "
+                "category, both today and all-time.\n"
+                "e.g. `a!catstat rares`  •  `a!catstat regionals`",
+            ),
+        ],
     },
     {
-        "name":       "cleardata",
-        "aliases":    [],
-        "usage":      "a!cleardata",
-        "short":      "Delete all catch & flee data for this server (last 24 h).",
-        "long": (
-            "Permanently removes every catch and flee record for this server "
-            "from the last 24-hour window.\n\n"
-            "A confirmation prompt is shown before any data is deleted.\n\n"
-            "⚠️ **Bot owner only.**"
-        ),
-        "admin": True,
+        "key":    "autopause",
+        "title":  "🔒 Autopause",
+        "emoji":  "🔒",
+        "color":  discord.Color.red(),
+        "summary": "Auto-lock channels on rare/regional spawns, with reminders and manual unlock.",
+        "fields": [
+            (
+                "`a!autopause enable` / `disable`  *(also: `a!ap`)*  *(Admin)*",
+                "Toggle the entire autopause feature on or off for this server.",
+            ),
+            (
+                "`a!autopause status`  *(Admin)*",
+                "Show current config: enabled state, naming bot, delays, reminder roles.",
+            ),
+            (
+                "`a!autopause setbot <user_id>`  *(Admin)*",
+                "Set the **Naming Bot** user ID to listen to for rare/regional spawns.",
+            ),
+            (
+                "`a!autopause setlock <seconds>`  *(Admin)*",
+                "Delay before locking the channel after a spawn. `0` = instant.\n"
+                "e.g. `a!ap setlock 30`",
+            ),
+            (
+                "`a!autopause setunlock <seconds>`  *(Admin)*",
+                "Delay before the channel auto-unlocks after being locked.\n"
+                "e.g. `a!ap setunlock 300`  *(5 minutes)*",
+            ),
+            (
+                "`a!autopause setreminder <seconds>`  *(Admin)*",
+                "Send a role-ping this many seconds after spawn detection. Must be "
+                "**between** lock and unlock delays. Requires both to be set first.\n"
+                "e.g. `a!ap setreminder 120`",
+            ),
+            (
+                "`a!autopause setrole rare <@role>`  *(Admin)*",
+                "Role pinged in reminders for **Rare** spawns.",
+            ),
+            (
+                "`a!autopause setrole regional <@role>`  *(Admin)*",
+                "Role pinged in reminders for **Regional** spawns.",
+            ),
+            (
+                "`a!unlock` / `a!u`",
+                "Manually unlock the current channel. Usable by anyone — same as "
+                "pressing the 🔓 Unlock Now button in the lock message.",
+            ),
+            (
+                "`a!locked`",
+                "View all currently locked channels. Rare / Regional tabs, pagination, "
+                "and a **🔓 Unlock All** button. Each entry links to the spawn message.",
+            ),
+        ],
     },
-    # ── Leaderboard ───────────────────────────────────────────────────────────
     {
-        "name":       "leaderboard",
-        "aliases":    ["lb"],
-        "usage":      "a!leaderboard [category]",
-        "short":      "Global or per-category catch leaderboard (last 24 h).",
-        "long": (
-            "`a!leaderboard` — top 10 catchers server-wide\n"
-            "`a!leaderboard <category>` — top 10 catchers for a specific category\n\n"
-            "Global entries show shiny (✨) and gigantamax (🔴) bonuses inline."
-        ),
-        "admin": False,
-    },
-    # ── Category stats ────────────────────────────────────────────────────────
-    {
-        "name":       "catstat",
-        "aliases":    ["categorystat", "cs"],
-        "usage":      "a!catstat <category>",
-        "short":      "Spawn / catch / flee stats for a category (last 24 h).",
-        "long": (
-            "Shows total spawns, catches, flees, and catch rate for every Pokémon "
-            "in the given category over the last 24 hours.\n\n"
-            f"**Available categories** — check your `categories.py` for the full list, "
-            "or run `a!catstat` with no arguments for a reminder."
-        ),
-        "admin": False,
+        "key":    "converter",
+        "title":  "🔄 Converter",
+        "emoji":  "🔄",
+        "color":  discord.Color.og_blurple(),
+        "summary": "Convert Components V2 messages into classic embeds.",
+        "fields": [
+            (
+                "`a!convert`  *(reply to a message)*",
+                "Manually convert a **Components V2** message into a classic embed. "
+                "Reply to the target message then run this command.",
+            ),
+            (
+                "`/convert`  *(slash — reply to a message)*",
+                "Slash-command version of the converter.",
+            ),
+        ],
     },
 ]
 
-_CMD_INDEX = {c["name"]: c for c in _COMMANDS}
-for _c in _COMMANDS:
-    for _alias in _c["aliases"]:
-        _CMD_INDEX[_alias] = _c
+# Flat key → index+1 map for direct jumping
+_KEY_TO_PAGE: dict[str, int] = {s["key"]: i + 1 for i, s in enumerate(SECTIONS)}
 
 
-# ── Cog ───────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Overview embed (page 0)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _overview_embed() -> discord.Embed:
+    e = discord.Embed(
+        title="📖 Help — Command Overview",
+        description=(
+            "Click a button below to open a section, "
+            "or use `a!help <section>` to jump directly.\n\u200b"
+        ),
+        color=discord.Color.dark_grey(),
+    )
+    for sec in SECTIONS:
+        e.add_field(
+            name=f"{sec['emoji']}  {sec['title'].split(' ', 1)[1]}",
+            value=sec["summary"],
+            inline=False,
+        )
+    e.set_footer(text="Prefix: a!  or  !")
+    return e
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Section embed (pages 1+)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _section_embed(sec: dict, page_num: int) -> discord.Embed:
+    e = discord.Embed(title=sec["title"], color=sec["color"])
+    for name, value in sec["fields"]:
+        e.add_field(name=name, value=value, inline=False)
+    e.set_footer(
+        text=(
+            f"Section {page_num}/{len(SECTIONS)}  •  "
+            "Prefix: a!  or  !  •  "
+            "a!help <section> to jump directly"
+        )
+    )
+    return e
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# View
+# ─────────────────────────────────────────────────────────────────────────────
+
+class HelpView(discord.ui.View):
+    """
+    page == 0           →  overview
+    page == 1..N        →  SECTIONS[page-1]
+    """
+
+    def __init__(self, page: int = 0):
+        super().__init__(timeout=180)
+        self.page = page
+        self._rebuild_buttons()
+
+    # ── button factory ────────────────────────────────────────────────────────
+
+    def _rebuild_buttons(self):
+        self.clear_items()
+
+        if self.page == 0:
+            # Overview: one button per section (row 0 and 1, up to 5 per row)
+            for i, sec in enumerate(SECTIONS):
+                btn = discord.ui.Button(
+                    label=sec["title"],
+                    emoji=sec["emoji"],
+                    style=discord.ButtonStyle.primary,
+                    row=i // 5,
+                    custom_id=f"help_sec_{i}",
+                )
+                # Capture i in closure
+                btn.callback = self._make_section_callback(i + 1)
+                self.add_item(btn)
+        else:
+            # Section page: Home + Prev + Next
+            home_btn = discord.ui.Button(
+                label="🏠 Home",
+                style=discord.ButtonStyle.secondary,
+                row=0,
+                custom_id="help_home",
+            )
+            home_btn.callback = self._go_home
+            self.add_item(home_btn)
+
+            prev_btn = discord.ui.Button(
+                label="◀ Prev",
+                style=discord.ButtonStyle.secondary,
+                disabled=(self.page == 1),
+                row=0,
+                custom_id="help_prev",
+            )
+            prev_btn.callback = self._go_prev
+            self.add_item(prev_btn)
+
+            next_btn = discord.ui.Button(
+                label="Next ▶",
+                style=discord.ButtonStyle.secondary,
+                disabled=(self.page == len(SECTIONS)),
+                row=0,
+                custom_id="help_next",
+            )
+            next_btn.callback = self._go_next
+            self.add_item(next_btn)
+
+    # ── callbacks ─────────────────────────────────────────────────────────────
+
+    def _make_section_callback(self, target_page: int):
+        async def callback(interaction: discord.Interaction):
+            self.page = target_page
+            self._rebuild_buttons()
+            sec = SECTIONS[self.page - 1]
+            await interaction.response.edit_message(
+                embed=_section_embed(sec, self.page), view=self
+            )
+        return callback
+
+    async def _go_home(self, interaction: discord.Interaction):
+        self.page = 0
+        self._rebuild_buttons()
+        await interaction.response.edit_message(embed=_overview_embed(), view=self)
+
+    async def _go_prev(self, interaction: discord.Interaction):
+        self.page -= 1
+        self._rebuild_buttons()
+        sec = SECTIONS[self.page - 1]
+        await interaction.response.edit_message(
+            embed=_section_embed(sec, self.page), view=self
+        )
+
+    async def _go_next(self, interaction: discord.Interaction):
+        self.page += 1
+        self._rebuild_buttons()
+        sec = SECTIONS[self.page - 1]
+        await interaction.response.edit_message(
+            embed=_section_embed(sec, self.page), view=self
+        )
+
+    # ── embed helper (used externally) ────────────────────────────────────────
+
+    def current_embed(self) -> discord.Embed:
+        if self.page == 0:
+            return _overview_embed()
+        return _section_embed(SECTIONS[self.page - 1], self.page)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cog
+# ─────────────────────────────────────────────────────────────────────────────
 
 class HelpCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @commands.command(name="help", aliases=["h"])
-    async def help_cmd(self, ctx: commands.Context, command: str = None):
+    @commands.command(name="help")
+    async def help_cmd(self, ctx: commands.Context, *, section: str = None):
         """
-        Show all commands or detailed help for a specific command.
+        Show all bot commands.
 
-        Usage:
-          a!help              — full command list
-          a!help profile      — details for a single command
+        a!help                  — overview with section buttons
+        a!help tracker          — Tracker commands
+        a!help leaderboard      — Leaderboard commands
+        a!help category         — Category Stats commands
+        a!help autopause        — Autopause commands
+        a!help converter        — Converter commands
         """
-        if command:
-            await self._send_command_help(ctx, command.lower())
-        else:
-            await self._send_overview(ctx)
+        start_page = 0
 
-    # ── Overview embed ────────────────────────────────────────────────────────
+        if section:
+            key = section.strip().lower()
 
-    async def _send_overview(self, ctx: commands.Context):
-        e = discord.Embed(
-            title="📖 Pokémon Tracker — Commands",
-            description=(
-                "All stats reflect the **last 24 hours** only.\n"
-                "Use `a!help <command>` for detailed info on any command.\n"
-                "🔒 = requires **Manage Server** permission (or bot owner)"
-            ),
-            color=discord.Color.gold(),
-        )
+            # Exact key match first
+            page = _KEY_TO_PAGE.get(key)
 
-        sections = {
-            "📊 Stats & Profiles": ["profile", "catstat", "leaderboard"],
-            "⚙️ Admin":            ["check", "fled-logs", "cleardata"],
-        }
+            # Fuzzy: check if the query appears in any key or title
+            if page is None:
+                match = next(
+                    (s for s in SECTIONS
+                     if key in s["key"] or key in s["title"].lower()),
+                    None,
+                )
+                if match:
+                    page = _KEY_TO_PAGE[match["key"]]
 
-        for section, names in sections.items():
-            lines = []
-            for name in names:
-                c = _CMD_INDEX[name]
-                alias_str = f"  `{'`, `'.join(c['aliases'])}`" if c["aliases"] else ""
-                lock = " 🔒" if c["admin"] else ""
-                lines.append(f"`a!{c['name']}`{alias_str}{lock} — {c['short']}")
-            e.add_field(name=section, value="\n".join(lines), inline=False)
+            if page is None:
+                names = list(_KEY_TO_PAGE.keys())
+                await ctx.reply(
+                    f"❌ Unknown section `{section}`.\n"
+                    f"Available: `{'`, `'.join(names)}`"
+                )
+                return
 
-        e.set_footer(text="Prefix: a!  •  Data window: 24 hours")
-        await ctx.reply(embed=e)
+            start_page = page
 
-    # ── Per-command embed ─────────────────────────────────────────────────────
-
-    async def _send_command_help(self, ctx: commands.Context, command: str):
-        c = _CMD_INDEX.get(command)
-        if not c:
-            await ctx.reply(
-                f"❌ Unknown command `{command}`. Run `a!help` to see all commands."
-            )
-            return
-
-        alias_str = ", ".join(f"`a!{a}`" for a in c["aliases"]) if c["aliases"] else "none"
-        e = discord.Embed(
-            title=f"📖 a!{c['name']}",
-            description=c["long"],
-            color=discord.Color.blurple(),
-        )
-        e.add_field(name="Usage",   value=f"```\n{c['usage']}\n```", inline=False)
-        e.add_field(name="Aliases", value=alias_str,                  inline=True)
-        e.add_field(name="Access",  value="🔒 Admin / Owner" if c["admin"] else "Everyone", inline=True)
-        await ctx.reply(embed=e)
+        view = HelpView(page=start_page)
+        await ctx.reply(embed=view.current_embed(), view=view)
 
 
 async def setup(bot: commands.Bot):
