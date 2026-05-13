@@ -1244,7 +1244,7 @@ class AutopauseCog(commands.Cog, name="AutopauseCog"):
         Example: a!pings add Ralts, Dratini, Larvitar
         """
         # Split on commas first, then whitespace — strip each token
-        raw = [n.strip() for part in pokemon_names.split(",") for n in part.split() if n.strip()]
+        raw = [n.strip() for n in pokemon_names.split(",") if n.strip()]
         if not raw:
             await ctx.reply("❌ Please provide at least one Pokémon name.")
             return
@@ -1278,7 +1278,7 @@ class AutopauseCog(commands.Cog, name="AutopauseCog"):
         Remove one or more Pokémon from your collection.
         Example: a!pings remove Dratini, Larvitar
         """
-        raw = [n.strip() for part in pokemon_names.split(",") for n in part.split() if n.strip()]
+        raw = [n.strip() for n in pokemon_names.split(",") if n.strip()]
         if not raw:
             await ctx.reply("❌ Please provide at least one Pokémon name.")
             return
