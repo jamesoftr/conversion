@@ -546,15 +546,8 @@ class AutopauseCog(commands.Cog, name="AutopauseCog"):
                 print(f"[autopause] spawn detected: {pokemon} not rare/regional/custom, skipping")
                 return
         else:
-            # It's rare or regional — check if custom list restricts it
-            custom_list = await _get_custom_list(message.guild.id)
-            if custom_list:
-                # Custom list exists — check if pokemon is in it
-                pokemon_match = any(pokemon.lower() == p.lower() for p in custom_list)
-                if not pokemon_match:
-                    print(f"[autopause] spawn detected: {pokemon} is {ping_type} but not in custom list, skipping")
-                    return
-                is_custom_pokemon = True
+            # It's rare or regional — always proceed regardless of custom list
+            print(f"[autopause] spawn detected: {pokemon} is {ping_type}, will trigger lock")
 
         autolock_delay = cfg.get("autolock_delay")    # seconds or None
         if autolock_delay is None:
