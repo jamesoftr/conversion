@@ -84,6 +84,14 @@ CATEGORIES: list[dict] = [
             "Alolan Muk",
         },
     },
+    {
+        "name": "Event Pokémon",
+        "key": "event",
+        "aliases": ["ep", "ev", "emons"],
+        "pokemon": {
+            "Cicada Vikavolt","Swarming Ledyba",
+        },
+    },
 ]
 
 # ── Lookup helpers ────────────────────────────────────────────────────────────
