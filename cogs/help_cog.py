@@ -6,7 +6,7 @@ a!help tracker          — Jump straight to Tracker
 a!help leaderboard      — Jump straight to Leaderboard
 a!help category         — Jump straight to Category Stats
 a!help autopause        — Jump straight to Autopause
-a!help converter        — Jump straight to Converter
+a!help converter        — Jump straight to Converter  (convert + convertch)
 
 Navigation
 ──────────
@@ -167,6 +167,27 @@ SECTIONS = [
             (
                 "`/convert`  *(slash — reply to a message)*",
                 "Slash-command version of the converter.",
+            ),
+            (
+                "`a!convertch list`  *(also: `a!cch list`)*  *(Admin)*",
+                "Show which channels auto-conversion is restricted to. "
+                "If the list is empty, conversion runs in **all channels**.",
+            ),
+            (
+                "`a!convertch add <#channel> …`  *(Admin)*",
+                "Add one or more channels to the auto-conversion allow-list. "
+                "Once any channel is added, conversion is restricted to listed channels only.\n"
+                "e.g. `a!cch add #general #bot-spam`",
+            ),
+            (
+                "`a!convertch remove <#channel> …`  *(Admin)*",
+                "Remove one or more channels from the allow-list. "
+                "If the list becomes empty, conversion resumes in **all channels**.\n"
+                "e.g. `a!cch remove #general`",
+            ),
+            (
+                "`a!convertch clear`  *(Admin)*",
+                "Clear all channel restrictions — auto-conversion will run in every channel again.",
             ),
         ],
     },
@@ -341,7 +362,7 @@ class HelpCog(commands.Cog):
         a!help leaderboard      — Leaderboard commands
         a!help category         — Category Stats commands
         a!help autopause        — Autopause commands
-        a!help converter        — Converter commands
+        a!help converter        — Converter commands (convert + convertch channel restrictions)
         """
         start_page = 0
 
