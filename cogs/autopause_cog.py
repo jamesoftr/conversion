@@ -42,6 +42,7 @@ import discord
 from discord.ext import commands
 
 import db
+import pokedata
 
 POKETWO_ID = 716390085896962058
 
@@ -63,14 +64,37 @@ async def _set_cfg(guild_id: int, **fields) -> None:
     )
 
 
+
+
+async def _get_custom_list(guild_id: int) -> list[str]:
+    """Get custom Pokémon list for this guild."""
+    return await db.get_custom_pokemon_list(guild_id)
+
+
+async def _add_to_custom_list(guild_id: int, pokemon: str) -> bool:
+    """Add Pokémon to custom list. Returns True if added."""
+    return await db.add_custom_pokemon(guild_id, pokemon)
+
+
+async def _remove_from_custom_list(guild_id: int, pokemon: str) -> bool:
+    """Remove Pokémon from custom list. Returns True if removed."""
+    return await db.remove_custom_pokemon(guild_id, pokemon)
+
+
+async def _clear_custom_list(guild_id: int) -> None:
+    """Clear entire custom list."""
+    return await db.clear_custom_pokemon_list(guild_id)
+
+
 async def _add_locked(
     guild_id: int,
     channel_id: int,
     pokemon: str,
-    ping_type: str,        # "rare" | "regional"
+    ping_type: str,        # "rare" | "regional" | "custom"
     message_url: str,
     lock_time: datetime,
     unlock_time: datetime,
+    is_custom: bool = False,
 ) -> None:
     await db.get_db().locked_channels.update_one(
         {"guild_id": guild_id, "channel_id": channel_id},
@@ -80,6 +104,7 @@ async def _add_locked(
             "message_url": message_url,
             "lock_time":   lock_time,
             "unlock_time": unlock_time,
+            "is_custom":   is_custom,
         }},
         upsert=True,
     )
@@ -110,6 +135,7 @@ def _extract_pokemon(text: str) -> str | None:
     Grab the Pokémon name from the first non-empty line.
     Format: 'Name: 99.99%'  — take everything before the LAST ':'
     e.g.  'Type: Null: 99%' → 'Type: Null'
+    e.g.  'Cicada Vikavolt: 99%' → 'Cicada Vikavolt' (full form name)
     """
     for line in text.splitlines():
         line = line.strip()
@@ -118,6 +144,31 @@ def _extract_pokemon(text: str) -> str | None:
         if ":" in line:
             return line.rsplit(":", 1)[0].strip()
     return None
+
+
+def _get_base_pokemon(pokemon_name: str) -> str:
+    """
+    Extract base Pokémon name from form variants.
+    e.g. 'Cicada Vikavolt' → 'Vikavolt'
+    e.g. 'Alolan Exeggutor' → 'Exeggutor'
+    e.g. 'Mega Charizard X' → 'Charizard'
+
+    Uses pokedata to validate — if the full name exists, return it.
+    Otherwise, try to extract the last word.
+    """
+    # Try exact match first
+    if pokedata.get(pokemon_name):
+        return pokemon_name
+
+    # Try the last word (handles form prefixes like "Cicada Vikavolt" → "Vikavolt")
+    words = pokemon_name.split()
+    if len(words) > 1:
+        base = words[-1]
+        if pokedata.get(base):
+            return base
+
+    # If still not found, return original
+    return pokemon_name
 
 
 def _detect_ping_type(text: str) -> str | None:
@@ -202,7 +253,9 @@ class LockedView(discord.ui.View):
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _filtered(self) -> list[dict]:
-        return [e for e in self.entries if e["ping_type"] == self.mode]
+        if self.mode == "custom":
+            return [e for e in self.entries if e.get("is_custom", False)]
+        return [e for e in self.entries if e["ping_type"] == self.mode and not e.get("is_custom", False)]
 
     def _total_pages(self) -> int:
         return max(1, (len(self._filtered()) + PAGE - 1) // PAGE)
@@ -211,10 +264,26 @@ class LockedView(discord.ui.View):
         self.prev_btn.disabled = self.page == 0
         self.next_btn.disabled = self.page >= self._total_pages() - 1
 
+        # Disable category buttons if they have no items
+        rare_items = [e for e in self.entries if e["ping_type"] == "rare" and not e.get("is_custom", False)]
+        regional_items = [e for e in self.entries if e["ping_type"] == "regional" and not e.get("is_custom", False)]
+        custom_items = [e for e in self.entries if e.get("is_custom", False)]
+
+        self.rare_btn.disabled = len(rare_items) == 0
+        self.regional_btn.disabled = len(regional_items) == 0
+        self.custom_btn.disabled = len(custom_items) == 0
+
     def _build_embed(self) -> discord.Embed:
         items = self._filtered()
-        colour = discord.Color.red() if self.mode == "rare" else discord.Color.purple()
-        label  = "🌟 Rare" if self.mode == "rare" else "🗺️ Regional"
+        if self.mode == "custom":
+            colour = discord.Color.gold()
+            label = "⭐ Custom"
+        elif self.mode == "rare":
+            colour = discord.Color.red()
+            label = "🌟 Rare"
+        else:
+            colour = discord.Color.purple()
+            label = "🗺️ Regional"
         embed  = discord.Embed(
             title=f"{label} — Locked Channels",
             color=colour,
@@ -248,6 +317,13 @@ class LockedView(discord.ui.View):
     @discord.ui.button(label="🗺️ Regional", style=discord.ButtonStyle.primary, row=0)
     async def regional_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         self.mode = "regional"
+        self.page = 0
+        self._refresh_buttons()
+        await interaction.response.edit_message(embed=self._build_embed(), view=self)
+
+    @discord.ui.button(label="⭐ Custom", style=discord.ButtonStyle.success, row=0)
+    async def custom_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        self.mode = "custom"
         self.page = 0
         self._refresh_buttons()
         await interaction.response.edit_message(embed=self._build_embed(), view=self)
@@ -451,13 +527,34 @@ class AutopauseCog(commands.Cog, name="AutopauseCog"):
         if "Shortest Name:" not in text:
             return
 
-        ping_type = _detect_ping_type(text)
-        if not ping_type:
-            return
-
         pokemon = _extract_pokemon(text)
         if not pokemon:
             return
+
+        ping_type = _detect_ping_type(text)  # "rare", "regional", or None
+        is_custom_pokemon = False
+
+        # If not rare/regional, check custom list
+        if not ping_type:
+            custom_list = await _get_custom_list(message.guild.id)
+            pokemon_match = any(pokemon.lower() == p.lower() for p in custom_list)
+            if pokemon_match:
+                print(f"[autopause] spawn detected: {pokemon} in custom list, will trigger lock")
+                ping_type = "custom"
+                is_custom_pokemon = True
+            else:
+                print(f"[autopause] spawn detected: {pokemon} not rare/regional/custom, skipping")
+                return
+        else:
+            # It's rare or regional — check if custom list restricts it
+            custom_list = await _get_custom_list(message.guild.id)
+            if custom_list:
+                # Custom list exists — check if pokemon is in it
+                pokemon_match = any(pokemon.lower() == p.lower() for p in custom_list)
+                if not pokemon_match:
+                    print(f"[autopause] spawn detected: {pokemon} is {ping_type} but not in custom list, skipping")
+                    return
+                is_custom_pokemon = True
 
         autolock_delay = cfg.get("autolock_delay")    # seconds or None
         if autolock_delay is None:
@@ -468,7 +565,7 @@ class AutopauseCog(commands.Cog, name="AutopauseCog"):
         self._clear_task(key)
 
         task = asyncio.create_task(
-            self._schedule_lock(message, pokemon, ping_type, autolock_delay, cfg)
+            self._schedule_lock(message, pokemon, ping_type, autolock_delay, cfg, is_custom_pokemon)
         )
         self._set_task(key, task)
 
@@ -481,6 +578,7 @@ class AutopauseCog(commands.Cog, name="AutopauseCog"):
         ping_type:   str,
         delay:       int,
         cfg:         dict,
+        is_custom:   bool = False,
     ):
         """Wait `delay` seconds then lock the channel."""
         guild   = trigger_msg.guild
@@ -531,6 +629,7 @@ class AutopauseCog(commands.Cog, name="AutopauseCog"):
                 message_url = trigger_msg.jump_url,
                 lock_time   = now,
                 unlock_time = unlock_time,
+                is_custom   = is_custom,
             )
 
             # Send notice with persistent unlock button
@@ -877,9 +976,16 @@ class AutopauseCog(commands.Cog, name="AutopauseCog"):
 
     @commands.command(name="locked")
     async def locked(self, ctx: commands.Context):
-        """Show currently locked channels (rare & regional)."""
+        """Show currently locked channels (rare & regional & custom)."""
         entries = await _get_locked(ctx.guild.id)
         view    = LockedView(self, ctx.guild, entries)
+
+        # Debug: log what we're showing
+        rare_count = len([e for e in entries if e["ping_type"] == "rare" and not e.get("is_custom", False)])
+        regional_count = len([e for e in entries if e["ping_type"] == "regional" and not e.get("is_custom", False)])
+        custom_count = len([e for e in entries if e.get("is_custom", False)])
+        print(f"[autopause] a!locked: rare={rare_count}, regional={regional_count}, custom={custom_count}")
+
         await ctx.reply(embed=view._build_embed(), view=view)
 
     # ── a!unlock ──────────────────────────────────────────────────────────────
@@ -895,6 +1001,67 @@ class AutopauseCog(commands.Cog, name="AutopauseCog"):
             ctx.guild, ctx.channel,
             reason=f"Manual unlock by {ctx.author} via a!unlock",
         )
+
+    # ── a!cl (custom pokemon list) ────────────────────────────────────────────
+
+    @commands.group(name="cl", aliases=["customlist"], invoke_without_command=True)
+    @commands.has_permissions(manage_guild=True)
+    async def custom_list(self, ctx: commands.Context):
+        """Manage custom Pokémon list for autopause."""
+        await ctx.send_help(ctx.command)
+
+    @custom_list.command(name="list")
+    @commands.has_permissions(manage_guild=True)
+    async def cl_list(self, ctx: commands.Context):
+        """Show current custom Pokémon list."""
+        custom = await _get_custom_list(ctx.guild.id)
+        if not custom:
+            await ctx.reply("📋 **Custom list is empty.** Use `a!cl add <pokemon>` to add Pokémon.")
+            return
+
+        e = discord.Embed(
+            title="📋 Custom Pokémon List",
+            description="\n".join(f"• {p}" for p in sorted(custom)),
+            color=discord.Color.blue(),
+        )
+        e.set_footer(text=f"{len(custom)} Pokémon")
+        await ctx.reply(embed=e)
+
+    @custom_list.command(name="add")
+    @commands.has_permissions(manage_guild=True)
+    async def cl_add(self, ctx: commands.Context, *, pokemon: str):
+        """Add a Pokémon to the custom list."""
+        pokemon = pokemon.strip()
+
+        # Validate against pokedata
+        if not pokedata.get(pokemon):
+            await ctx.reply(f"❌ **{pokemon}** not found in Pokédex.")
+            return
+
+        added = await _add_to_custom_list(ctx.guild.id, pokemon)
+        if added:
+            await ctx.reply(f"✅ Added **{pokemon}** to custom list.")
+        else:
+            await ctx.reply(f"ℹ️ **{pokemon}** is already in the custom list.")
+
+    @custom_list.command(name="remove")
+    @commands.has_permissions(manage_guild=True)
+    async def cl_remove(self, ctx: commands.Context, *, pokemon: str):
+        """Remove a Pokémon from the custom list."""
+        pokemon = pokemon.strip()
+
+        removed = await _remove_from_custom_list(ctx.guild.id, pokemon)
+        if removed:
+            await ctx.reply(f"✅ Removed **{pokemon}** from custom list.")
+        else:
+            await ctx.reply(f"❌ **{pokemon}** not found in custom list.")
+
+    @custom_list.command(name="clear")
+    @commands.has_permissions(manage_guild=True)
+    async def cl_clear(self, ctx: commands.Context):
+        """Clear the entire custom Pokémon list."""
+        await _clear_custom_list(ctx.guild.id)
+        await ctx.reply("🗑️ **Custom list cleared.**")
 
     # ── Error handler ─────────────────────────────────────────────────────────
 
