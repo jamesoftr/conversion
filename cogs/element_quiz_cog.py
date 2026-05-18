@@ -208,10 +208,18 @@ class ElementQuizCog(commands.Cog):
         """Element Quiz management commands."""
         await ctx.send_help(ctx.command)
 
+    def _is_admin(self, ctx: commands.Context) -> bool:
+        """True if the user has Manage Guild in a server, or is in DMs (no guild = no restriction)."""
+        if ctx.guild is None:
+            return True  # DMs — allow freely
+        return ctx.author.guild_permissions.manage_guild
+
     @quiz.command(name="skip")
-    @commands.has_permissions(manage_guild=True)
     async def quiz_skip(self, ctx: commands.Context):
         """Skip / cancel the currently active element quiz."""
+        if not self._is_admin(ctx):
+            await ctx.reply("❌ You need **Manage Guild** permission to use this.")
+            return
         key    = self._scope_key(ctx.message)
         active = self._active.pop(key, None)
         if active:
@@ -256,9 +264,11 @@ class ElementQuizCog(commands.Cog):
         await ctx.reply(embed=embed)
 
     @quiz.command(name="trigger")
-    @commands.has_permissions(manage_guild=True)
     async def quiz_trigger(self, ctx: commands.Context):
         """Manually fire an element quiz right now (useful for testing)."""
+        if not self._is_admin(ctx):
+            await ctx.reply("❌ You need **Manage Guild** permission to use this.")
+            return
         key = self._scope_key(ctx.message)
         if key in self._active:
             await ctx.reply("⚠️ A quiz is already active! Use `a!quiz skip` first.")
@@ -267,7 +277,6 @@ class ElementQuizCog(commands.Cog):
         await self._post_quiz(ctx.channel, key)
 
     @quiz.command(name="setchannel")
-    @commands.has_permissions(manage_guild=True)
     async def quiz_setchannel(self, ctx: commands.Context, channel: discord.TextChannel = None):
         """
         Lock quizzes to a specific channel (guild only).
@@ -275,6 +284,9 @@ class ElementQuizCog(commands.Cog):
 
         Usage: a!quiz setchannel #general
         """
+        if not self._is_admin(ctx):
+            await ctx.reply("❌ You need **Manage Guild** permission to use this.")
+            return
         if not ctx.guild:
             await ctx.reply("ℹ️ Channel locking only applies in servers, not DMs.")
             return
@@ -283,9 +295,11 @@ class ElementQuizCog(commands.Cog):
         await ctx.reply(f"✅ Element quizzes will now only trigger in {target.mention}.")
 
     @quiz.command(name="clearchannel")
-    @commands.has_permissions(manage_guild=True)
     async def quiz_clearchannel(self, ctx: commands.Context):
         """Remove the channel restriction — quizzes trigger wherever the 10th message lands."""
+        if not self._is_admin(ctx):
+            await ctx.reply("❌ You need **Manage Guild** permission to use this.")
+            return
         if not ctx.guild:
             await ctx.reply("ℹ️ Channel locking only applies in servers, not DMs.")
             return
@@ -294,10 +308,16 @@ class ElementQuizCog(commands.Cog):
 
     # ── Error handler ─────────────────────────────────────────────────────────
 
-    @quiz.error
-    async def quiz_error(self, ctx: commands.Context, error):
-        if isinstance(error, commands.MissingPermissions):
+    @commands.Cog.listener()
+    async def on_command_error(self, ctx: commands.Context, error: commands.CommandError):
+        # Only handle errors from this cog's commands
+        if ctx.command is None or ctx.command.cog is not self:
+            return
+        # Unwrap CheckFailure (e.g. has_permissions failing in DMs)
+        if isinstance(error, (commands.CheckFailure, commands.MissingPermissions)):
             await ctx.reply("❌ You need **Manage Guild** permission to use this.")
+        elif isinstance(error, commands.CommandNotFound):
+            pass  # ignore unknown subcommands silently
         else:
             raise error
 
