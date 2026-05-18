@@ -50,7 +50,7 @@ MESSAGES_PER_QUIZ    = 10
 POKETWO_ID           = 716390085896962058
 QUIZ_TIMEOUT_SECONDS = 120   # seconds before the quiz auto-expires with no winner
 LEADERBOARD_SIZE     = 10   # max entries shown in the scores embed
-INCENSE_INTERVAL     = 10   # seconds between incense quiz spawns
+INCENSE_INTERVAL     = 20   # seconds between incense quiz spawns
 
 
 # ─────────────────────────────────────────────────────────────────────────────
