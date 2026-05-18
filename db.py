@@ -98,6 +98,11 @@ async def ensure_indexes() -> None:
     # Add to ensure_indexes():
     await db.custom_pokemon_lists.create_index([("guild_id", 1)], unique=True)
 
+    # Element quiz leaderboard index
+    await db.quiz_scores.create_index(
+        [("scope_key", 1), ("user_id", 1)], unique=True
+    )
+
 # ── Catches ───────────────────────────────────────────────────────────────────
 
 async def record_catch(
@@ -499,3 +504,35 @@ async def clear_custom_pokemon_list(guild_id: int) -> None:
     """Clear the entire custom Pokémon list for a guild."""
     await get_db().custom_pokemon_lists.delete_one({"guild_id": guild_id})
 
+
+# ── Element Quiz leaderboard ──────────────────────────────────────────────────
+
+async def quiz_add_score(scope_key: str, user_id: int) -> int:
+    """
+    Increment quiz score for user_id in the given scope.
+    scope_key is the guild_id (as str) or "dm_{user_id}".
+    Returns the new total score.
+    """
+    db = get_db()
+    doc = await db.quiz_scores.find_one_and_update(
+        {"scope_key": scope_key, "user_id": user_id},
+        {"$inc": {"score": 1}},
+        upsert=True,
+        return_document=True,  # motor uses pymongo's ReturnDocument.AFTER semantics with True
+    )
+    return doc["score"]
+
+
+async def quiz_get_scores(scope_key: str, limit: int = 10) -> list[dict]:
+    """
+    Return top-N scores for a scope, sorted descending.
+    Returns [{"user_id": int, "score": int}, ...]
+    """
+    db = get_db()
+    cursor = (
+        db.quiz_scores
+        .find({"scope_key": scope_key}, {"_id": 0, "user_id": 1, "score": 1})
+        .sort("score", -1)
+        .limit(limit)
+    )
+    return await cursor.to_list(limit)
