@@ -12,7 +12,7 @@ How it works
     needed.  First correct answer winss.
 6.  Winner is announced with their updated total score. The quiz is then cleared.
 7.  If no one guesses within QUIZ_TIMEOUT_SECONDS, the bot reveals the answer.
-8.  All state is in-memory (resets on restart); no DB required.
+8.  Scores are persisted to MongoDB (quiz_scores collection); state resets on restart but scores survive.
 9.  Messages starting with a Pokétwo ping are ignored entirely.
 10. DMs work — each user gets their own independent quiz session.
 
@@ -39,6 +39,7 @@ import discord
 from discord.ext import commands
 
 from elements import ELEMENTS, get_by_name
+import db as _db
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -179,10 +180,6 @@ class ElementQuizCog(commands.Cog):
         # { scope_key: int | None }  — optional channel lock (guilds only)
         self._quiz_channel: dict[int, int | None] = {}
 
-        # Leaderboard — guild scores:  { guild_id: { user_id: int } }
-        #             — DM scores:     { f"dm_{user_id}": { user_id: int } }
-        self._scores: dict[int | str, dict[int, int]] = {}
-
         # Timeout tasks — { scope_key: asyncio.Task }
         self._timeout_tasks: dict[int | str, asyncio.Task] = {}
 
@@ -206,11 +203,9 @@ class ElementQuizCog(commands.Cog):
     def _reset_counter(self, key: int | str) -> None:
         self._counters[key] = 0
 
-    def _add_score(self, key: int | str, user_id: int) -> int:
+    async def _add_score(self, key: int | str, user_id: int) -> int:
         """Increment the score for user_id in the given scope. Returns new total."""
-        scope_scores        = self._scores.setdefault(key, {})
-        scope_scores[user_id] = scope_scores.get(user_id, 0) + 1
-        return scope_scores[user_id]
+        return await _db.quiz_add_score(str(key), user_id)
 
     def _cancel_timeout(self, key: int | str) -> None:
         task = self._timeout_tasks.pop(key, None)
@@ -300,7 +295,7 @@ class ElementQuizCog(commands.Cog):
                 self._cancel_timeout(key)
                 self._reset_counter(key)
 
-                new_total = self._add_score(key, message.author.id)
+                new_total = await self._add_score(key, message.author.id)
 
                 await message.channel.send(
                     embed=_build_win_embed(active["element"], message.author, new_total)
@@ -428,8 +423,11 @@ class ElementQuizCog(commands.Cog):
     @quiz.command(name="scores")
     async def quiz_scores(self, ctx: commands.Context):
         """Show the element quiz leaderboard for this server (or your DM session)."""
-        key          = self._scope_key(ctx.message)
-        scope_scores = self._scores.get(key, {})
+        key  = self._scope_key(ctx.message)
+        rows = await _db.quiz_get_scores(str(key), limit=LEADERBOARD_SIZE)
+
+        # Convert [{user_id, score}, ...] → {user_id: score} for the embed helper
+        scope_scores = {r["user_id"]: r["score"] for r in rows}
 
         if ctx.guild:
             scope_label = f"Server: {ctx.guild.name}"
