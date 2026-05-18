@@ -1,8 +1,21 @@
 import json
+import re
 import discord
 from discord import app_commands
 from discord.ext import commands
 from collections import OrderedDict
+
+# Custom emoji that replaces any custom emoji in converted content
+# (the bot cannot copy custom emojis from the original server)
+_REPLACEMENT_EMOJI = "<:reply:1503236369126916117>"
+
+# Matches custom/animated Discord emojis: <:name:id> or <a:name:id>
+_CUSTOM_EMOJI_RE = re.compile(r"<a?:[A-Za-z0-9_]+:\d+>")
+
+
+def _replace_custom_emojis(text: str) -> str:
+    """Replace every custom Discord emoji in *text* with the replacement emoji."""
+    return _CUSTOM_EMOJI_RE.sub(_REPLACEMENT_EMOJI, text)
 
 CACHE_MAX_SIZE = 500
 
@@ -91,7 +104,7 @@ def _walk(components: list, result: dict):
         elif ctype == 10:      # TextDisplay
             content = comp.get("content", "").strip()
             if content:
-                result["text"].append(content)
+                result["text"].append(_replace_custom_emojis(content))
 
         elif ctype == 11:      # Thumbnail (correct type number)
             url = (comp.get("media") or {}).get("url", "")
@@ -117,10 +130,19 @@ def _walk(components: list, result: dict):
                 result["text"].append(f"📎 [{name}]({url})")
 
         elif ctype == 2:       # Button
-            label = comp.get("label", "")
+            label = comp.get("label", "").strip()
             url   = comp.get("url")
-            emoji = (comp.get("emoji") or {}).get("name", "")
-            display = f"{emoji} {label}".strip()
+            # Emoji object may be a custom emoji (unusable by the bot) — drop it entirely.
+            # Only keep standard Unicode emoji if it's not a custom one.
+            emoji_obj = comp.get("emoji") or {}
+            emoji_id  = emoji_obj.get("id")   # present for custom emoji, None for unicode
+            emoji_name = emoji_obj.get("name", "")
+            if emoji_id is None and emoji_name:
+                # Standard unicode emoji — safe to prepend
+                display = f"{emoji_name} {label}".strip()
+            else:
+                # Custom emoji — omit it, just use the label
+                display = label
             if display:
                 result["buttons"].append((display, url))
 
@@ -144,17 +166,64 @@ def _parse(raw_components: list) -> dict:
     return result
 
 
-def _build_embeds(message: discord.Message, raw_components: list) -> list[discord.Embed]:
+def _build_view(data: dict) -> discord.ui.View | None:
+    """Build a discord.ui.View with real buttons and selects from parsed data.
+
+    Buttons with a URL become link buttons (always enabled, no callback needed).
+    Buttons without a URL become disabled grey buttons (non-functional, display only).
+    Selects become disabled dropdowns showing the original placeholder + options.
+    Returns None when there are no interactive components.
+    """
+    if not data["buttons"] and not data["selects"]:
+        return None
+
+    view = discord.ui.View(timeout=None)
+
+    # Add buttons (max 25 total across all rows; Discord allows 5 per ActionRow)
+    for label, url in data["buttons"][:25]:
+        if url:
+            btn = discord.ui.Button(
+                label=label[:80],
+                url=url,
+                style=discord.ButtonStyle.link,
+            )
+        else:
+            btn = discord.ui.Button(
+                label=label[:80],
+                style=discord.ButtonStyle.secondary,
+                disabled=True,
+            )
+        view.add_item(btn)
+
+    # Add selects (max 5; each takes a full row)
+    for ph, opts in data["selects"][:5]:
+        options = [
+            discord.SelectOption(label=o[:100] or "\u2014", value=o[:100] or "__none__")
+            for o in opts[:25]
+        ] or [discord.SelectOption(label="(no options)", value="__none__")]
+
+        select = discord.ui.Select(
+            placeholder=ph[:150],
+            options=options,
+            disabled=True,
+        )
+        view.add_item(select)
+
+    return view
+
+
+def _build_message(message: discord.Message, raw_components: list) -> tuple[list[discord.Embed], discord.ui.View | None]:
+    """Return (embeds, view) for the converted message."""
     data = _parse(raw_components)
 
     if message.content and message.content.strip():
-        data["text"].insert(0, message.content.strip())
+        data["text"].insert(0, _replace_custom_emojis(message.content.strip()))
 
     for embed in message.embeds:
         if embed.description:
-            data["text"].append(embed.description)
+            data["text"].append(_replace_custom_emojis(embed.description))
         for field in embed.fields:
-            data["text"].append(f"**{field.name}**\n{field.value}")
+            data["text"].append(f"**{field.name}**\n{_replace_custom_emojis(field.value)}")
         if embed.image and embed.image.url:
             data["images"].append((embed.image.url, ""))
         if embed.thumbnail and embed.thumbnail.url and data["thumbnail"] is None:
@@ -166,27 +235,20 @@ def _build_embeds(message: discord.Message, raw_components: list) -> list[discor
         if (att.content_type or "").startswith("image/"):
             data["images"].append((att.url, att.filename))
         else:
-            data["text"].append(f"📎 [{att.filename}]({att.url})")
+            data["text"].append(f"\U0001f4ce [{att.filename}]({att.url})")
 
     color = discord.Color(data["color"]) if data["color"] else discord.Color.blurple()
 
     desc_parts = list(data["text"])
-    if data["buttons"]:
-        desc_parts.append("**Buttons:** " + " · ".join(
-            f"[{l}]({u})" if u else f"`{l}`" for l, u in data["buttons"]
-        ))
-    if data["selects"]:
-        for ph, opts in data["selects"]:
-            desc_parts.append(f"**{ph}:** " + (", ".join(f"`{o}`" for o in opts) or "*no options*"))
 
     # Consider it readable if there's text OR at least one image
     has_content = bool(desc_parts) or bool(data["images"]) or data["thumbnail"] is not None
     description = "\n\n".join(desc_parts) if desc_parts else "*No text content.*"
     if len(description) > 4090:
-        description = description[:4087] + "…"
+        description = description[:4087] + "\u2026"
 
     main = discord.Embed(description=description, color=color, timestamp=message.created_at)
-    main.set_footer(text=f"#{message.channel.name}  •  Components V2 → Embed")
+    main.set_footer(text=f"#{message.channel.name}  \u2022  Components V2 \u2192 Embed")
 
     if data["thumbnail"]:
         main.set_thumbnail(url=data["thumbnail"][0])
@@ -201,7 +263,17 @@ def _build_embeds(message: discord.Message, raw_components: list) -> list[discor
             extra.description = f"*{desc}*"
         embeds.append(extra)
 
-    return embeds if has_content else []
+    if not has_content:
+        return [], None
+
+    view = _build_view(data)
+    return embeds, view
+
+
+# Thin shim for any callers that only need embeds
+def _build_embeds(message: discord.Message, raw_components: list) -> list[discord.Embed]:
+    embeds, _ = _build_message(message, raw_components)
+    return embeds
 
 
 async def _get_or_create_webhook(channel: discord.TextChannel) -> discord.Webhook:
@@ -212,10 +284,16 @@ async def _get_or_create_webhook(channel: discord.TextChannel) -> discord.Webhoo
     return await channel.create_webhook(name="V2 Converter Pro")
 
 
-async def _send_via_webhook(message: discord.Message, embeds: list[discord.Embed], *, edited: bool = False):
+async def _send_via_webhook(
+    message: discord.Message,
+    embeds: list[discord.Embed],
+    *,
+    view: discord.ui.View | None = None,
+    edited: bool = False,
+):
     channel = message.channel
     content = f"✏️ *(this message was edited — [jump to original]({message.jump_url}))*" if edited else None
-
+    # Webhooks don't support view= directly; send the view as a separate bot message.
     if isinstance(channel, discord.Thread):
         wh = await _get_or_create_webhook(channel.parent)
         await wh.send(
@@ -225,6 +303,8 @@ async def _send_via_webhook(message: discord.Message, embeds: list[discord.Embed
             avatar_url=message.author.display_avatar.url,
             thread=channel,
         )
+        if view is not None:
+            await channel.send(view=view)
     elif isinstance(channel, discord.TextChannel):
         wh = await _get_or_create_webhook(channel)
         await wh.send(
@@ -233,8 +313,10 @@ async def _send_via_webhook(message: discord.Message, embeds: list[discord.Embed
             username=message.author.display_name,
             avatar_url=message.author.display_avatar.url,
         )
+        if view is not None:
+            await channel.send(view=view)
     else:
-        await channel.send(content=content, embeds=embeds)
+        await channel.send(content=content, embeds=embeds, view=view)
 
 
 def _is_v2_message(payload: dict, components: list) -> bool:
@@ -403,15 +485,15 @@ class ConverterCog(commands.Cog):
             f"images={len(parsed['images'])} thumbnail={parsed['thumbnail'] is not None}"
         )
 
-        embeds = _build_embeds(message, components)
+        embeds, view = _build_message(message, components)
         if not embeds:
-            print(f"  → SKIP: _build_embeds produced no content (no text, images, or thumbnail)")
+            print(f"  → SKIP: _build_message produced no content (no text, images, or thumbnail)")
             return
 
         action = "EDITING" if is_edit else "CONVERTING"
-        print(f"  → ✅ {action}: sending {len(embeds)} embed(s) via webhook")
+        print(f"  → ✅ {action}: sending {len(embeds)} embed(s) + view={view is not None} via webhook")
         _mark_converted(message_id)
-        await _send_via_webhook(message, embeds, edited=is_edit)
+        await _send_via_webhook(message, embeds, view=view, edited=is_edit)
 
     @commands.Cog.listener()
     async def on_socket_raw_receive(self, raw: str | bytes):
@@ -434,16 +516,16 @@ class ConverterCog(commands.Cog):
 
     # ── Manual !convert command ───────────────────────────────────────────────
 
-    async def _do_convert(self, target: discord.Message) -> tuple[str, list[discord.Embed]]:
+    async def _do_convert(self, target: discord.Message) -> tuple[str, list[discord.Embed], discord.ui.View | None]:
         raw = self._get(target.id)
         note = "-# ✅ Source: Components V2 (live cache)" if raw else \
                "-# ⚠️ Not in cache — message may have been sent before bot started."
-        embeds = _build_embeds(target, raw or [])
+        embeds, view = _build_message(target, raw or [])
         intro  = (
             f"📬 **Converted** from {target.author.mention} — "
             f"[Jump to original]({target.jump_url})\n{note}"
         )
-        return intro, embeds
+        return intro, embeds, view
 
     @commands.command(name="convert", help="Reply to a Components V2 message to convert it.")
     async def prefix_convert(self, ctx: commands.Context):
@@ -457,8 +539,8 @@ class ConverterCog(commands.Cog):
             await ctx.reply("❌ Could not fetch that message.")
             return
         try:
-            intro, embeds = await self._do_convert(target)
-            await ctx.reply(content=intro, embeds=embeds)
+            intro, embeds, view = await self._do_convert(target)
+            await ctx.reply(content=intro, embeds=embeds, view=view)
         except Exception as e:
             await ctx.reply(f"❌ Error:\n```\n{type(e).__name__}: {e}\n```")
 
@@ -478,8 +560,8 @@ class ConverterCog(commands.Cog):
             return
         try:
             await interaction.response.defer()
-            intro, embeds = await self._do_convert(target)
-            await interaction.followup.send(content=intro, embeds=embeds)
+            intro, embeds, view = await self._do_convert(target)
+            await interaction.followup.send(content=intro, embeds=embeds, view=view)
         except Exception as e:
             await interaction.followup.send(f"❌ Error:\n```\n{type(e).__name__}: {e}\n```")
 
