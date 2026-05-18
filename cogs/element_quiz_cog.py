@@ -10,10 +10,11 @@ How it works
 4.  Players guess by just typing the element name anywhere in chat.
 5.  The bot scans every message for a matching element name — no command prefix
     needed.  First correct answer wins.
-6.  Winner is announced and the active quiz for that scope is cleared.
-7.  All state is in-memory (resets on restart); no DB required.
-8.  Messages starting with a Pokétwo ping are ignored entirely.
-9.  DMs work — each user gets their own independent quiz session.
+6.  Winner is announced with their updated total score. The quiz is then cleared.
+7.  If no one guesses within QUIZ_TIMEOUT_SECONDS, the bot reveals the answer.
+8.  All state is in-memory (resets on restart); no DB required.
+9.  Messages starting with a Pokétwo ping are ignored entirely.
+10. DMs work — each user gets their own independent quiz session.
 
 State keys
 ──────────
@@ -27,8 +28,10 @@ Commands  (Manage Guild only — guild only, not usable in DMs)
   a!quiz trigger       — manually fire a quiz right now (for testing)
   a!quiz setchannel    — lock quizzes to a specific channel (optional, guild only)
   a!quiz clearchannel  — remove channel restriction
+  a!quiz scores        — show the element quiz leaderboard
 """
 
+import asyncio
 import random
 import re
 
@@ -42,8 +45,10 @@ from elements import ELEMENTS, get_by_name
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
 
-MESSAGES_PER_QUIZ = 10
-POKETWO_ID        = 716390085896962058
+MESSAGES_PER_QUIZ    = 10
+POKETWO_ID           = 716390085896962058
+QUIZ_TIMEOUT_SECONDS = 120   # seconds before the quiz auto-expires with no winner
+LEADERBOARD_SIZE     = 10   # max entries shown in the scores embed
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -81,21 +86,79 @@ def _build_quiz_embed(element: dict) -> discord.Embed:
         ),
         color=discord.Color.teal(),
     )
-    embed.set_footer(text="First correct answer wins • No prefix needed")
+    embed.set_footer(text=f"First correct answer wins • No prefix needed • {QUIZ_TIMEOUT_SECONDS}s to answer")
     return embed
 
 
-def _build_win_embed(element: dict, winner: discord.User | discord.Member) -> discord.Embed:
+def _build_win_embed(
+    element: dict,
+    winner: discord.User | discord.Member,
+    new_total: int,
+) -> discord.Embed:
     embed = discord.Embed(
         title="✅ Correct!",
         description=(
             f"🎉 **{winner.display_name}** got it right!\n\n"
             f"The element was **{element['name']}**\n"
-            f"Symbol: `{element['symbol']}` · Atomic #: `{element['atomic_number']}`"
+            f"Symbol: `{element['symbol']}` · Atomic #: `{element['atomic_number']}`\n\n"
+            f"**{winner.display_name}'s total correct guesses:** `{new_total}` 🏆\n\n"
+            f"*Check the leaderboard with `a!quiz scores`*"
         ),
         color=discord.Color.green(),
     )
     embed.set_thumbnail(url=winner.display_avatar.url)
+    return embed
+
+
+def _build_timeout_embed(element: dict) -> discord.Embed:
+    embed = discord.Embed(
+        title="⏰ Time's Up!",
+        description=(
+            f"Nobody guessed in time!\n\n"
+            f"The element was **{element['name']}**\n"
+            f"Symbol: `{element['symbol']}` · Atomic #: `{element['atomic_number']}`"
+        ),
+        color=discord.Color.red(),
+    )
+    embed.set_footer(text="Better luck next time!")
+    return embed
+
+
+def _build_leaderboard_embed(
+    scores: dict[int, int],
+    bot: commands.Bot,
+    scope_label: str,
+) -> discord.Embed:
+    """
+    Build a leaderboard embed from a {user_id: score} dict.
+    Resolves display names via bot.get_user(); falls back to 'Unknown User'.
+    """
+    if not scores:
+        embed = discord.Embed(
+            title="🏆 Element Quiz Leaderboard",
+            description="No scores yet — be the first to guess correctly!",
+            color=discord.Color.gold(),
+        )
+        embed.set_footer(text=scope_label)
+        return embed
+
+    sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    top           = sorted_scores[:LEADERBOARD_SIZE]
+
+    medals = ["🥇", "🥈", "🥉"]
+    lines  = []
+    for rank, (user_id, score) in enumerate(top, start=1):
+        user   = bot.get_user(user_id)
+        name   = user.display_name if user else f"Unknown User ({user_id})"
+        medal  = medals[rank - 1] if rank <= 3 else f"`#{rank}`"
+        lines.append(f"{medal} **{name}** — `{score}` correct")
+
+    embed = discord.Embed(
+        title="🏆 Element Quiz Leaderboard",
+        description="\n".join(lines),
+        color=discord.Color.gold(),
+    )
+    embed.set_footer(text=scope_label)
     return embed
 
 
@@ -113,8 +176,15 @@ class ElementQuizCog(commands.Cog):
         # { scope_key: {"element": dict, "channel_id": int} }
         self._active: dict[int | str, dict] = {}
 
-        # { guild_id: int | None }  — optional channel lock (guilds only)
+        # { scope_key: int | None }  — optional channel lock (guilds only)
         self._quiz_channel: dict[int, int | None] = {}
+
+        # Leaderboard — guild scores:  { guild_id: { user_id: int } }
+        #             — DM scores:     { f"dm_{user_id}": { user_id: int } }
+        self._scores: dict[int | str, dict[int, int]] = {}
+
+        # Timeout tasks — { scope_key: asyncio.Task }
+        self._timeout_tasks: dict[int | str, asyncio.Task] = {}
 
         # Sorted element names longest-first for greedy matching
         self._sorted_names: list[str] = sorted(
@@ -136,6 +206,17 @@ class ElementQuizCog(commands.Cog):
     def _reset_counter(self, key: int | str) -> None:
         self._counters[key] = 0
 
+    def _add_score(self, key: int | str, user_id: int) -> int:
+        """Increment the score for user_id in the given scope. Returns new total."""
+        scope_scores        = self._scores.setdefault(key, {})
+        scope_scores[user_id] = scope_scores.get(user_id, 0) + 1
+        return scope_scores[user_id]
+
+    def _cancel_timeout(self, key: int | str) -> None:
+        task = self._timeout_tasks.pop(key, None)
+        if task and not task.done():
+            task.cancel()
+
     def _find_element_in_text(self, text: str) -> dict | None:
         """
         Scan text for any element name (whole-word, case-insensitive).
@@ -148,6 +229,28 @@ class ElementQuizCog(commands.Cog):
                 return get_by_name(name_lower)
         return None
 
+    async def _quiz_timeout(
+        self,
+        key: int | str,
+        channel: discord.TextChannel | discord.DMChannel,
+    ) -> None:
+        """
+        Wait QUIZ_TIMEOUT_SECONDS, then reveal the answer if no one has guessed.
+        This runs as a background task and cancels itself cleanly if the quiz
+        is already resolved (correct guess or manual skip).
+        """
+        await asyncio.sleep(QUIZ_TIMEOUT_SECONDS)
+
+        # If quiz is still active for this scope, reveal the answer
+        active = self._active.pop(key, None)
+        self._timeout_tasks.pop(key, None)
+        if active:
+            self._reset_counter(key)
+            try:
+                await channel.send(embed=_build_timeout_embed(active["element"]))
+            except discord.HTTPException:
+                pass  # channel may have been deleted, etc.
+
     async def _post_quiz(
         self,
         channel: discord.TextChannel | discord.DMChannel,
@@ -155,7 +258,17 @@ class ElementQuizCog(commands.Cog):
     ) -> None:
         element           = random.choice(ELEMENTS)
         self._active[key] = {"element": element, "channel_id": channel.id}
+
+        # Cancel any stale timeout (shouldn't happen, but be safe)
+        self._cancel_timeout(key)
+
         await channel.send(embed=_build_quiz_embed(element))
+
+        # Start the timeout countdown
+        task = asyncio.get_event_loop().create_task(
+            self._quiz_timeout(key, channel)
+        )
+        self._timeout_tasks[key] = task
 
     # ── Listener ─────────────────────────────────────────────────────────────
 
@@ -182,10 +295,15 @@ class ElementQuizCog(commands.Cog):
         if active:
             found = self._find_element_in_text(message.content)
             if found and found["name"].lower() == active["element"]["name"].lower():
+                # Correct! Clear quiz and timeout before doing anything else
                 self._active.pop(key, None)
+                self._cancel_timeout(key)
                 self._reset_counter(key)
+
+                new_total = self._add_score(key, message.author.id)
+
                 await message.channel.send(
-                    embed=_build_win_embed(active["element"], message.author)
+                    embed=_build_win_embed(active["element"], message.author, new_total)
                 )
                 return  # don't count this message toward the next quiz
 
@@ -221,6 +339,7 @@ class ElementQuizCog(commands.Cog):
             await ctx.reply("❌ You need **Manage Guild** permission to use this.")
             return
         key    = self._scope_key(ctx.message)
+        self._cancel_timeout(key)
         active = self._active.pop(key, None)
         if active:
             await ctx.reply(f"⏭️ Quiz skipped. The element was **{active['element']['name']}**.")
@@ -305,6 +424,20 @@ class ElementQuizCog(commands.Cog):
             return
         self._quiz_channel.pop(ctx.guild.id, None)
         await ctx.reply("✅ Channel restriction removed. Quizzes can now trigger in any channel.")
+
+    @quiz.command(name="scores")
+    async def quiz_scores(self, ctx: commands.Context):
+        """Show the element quiz leaderboard for this server (or your DM session)."""
+        key          = self._scope_key(ctx.message)
+        scope_scores = self._scores.get(key, {})
+
+        if ctx.guild:
+            scope_label = f"Server: {ctx.guild.name}"
+        else:
+            scope_label = "Your personal DM quiz session"
+
+        embed = _build_leaderboard_embed(scope_scores, self.bot, scope_label)
+        await ctx.reply(embed=embed)
 
     # ── Error handler ─────────────────────────────────────────────────────────
 
