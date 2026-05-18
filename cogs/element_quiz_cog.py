@@ -534,7 +534,7 @@ class ElementQuizCog(commands.Cog):
             self._incense_loop(ctx.channel, scope_key)
         )
         self._incense_tasks[ctx.channel.id] = task
-        await ctx.reply("🧪 **Incense started!** Elements will spawn every 10 seconds. Use `a!quiz incense stop` to end.")
+        await ctx.reply("🧪 **Incense started!** Elements will spawn every {INCENSE_INTERVAL} seconds. Use `a!quiz incense stop` to end.")
 
     @quiz_incense.command(name="stop")
     async def quiz_incense_stop(self, ctx: commands.Context):
