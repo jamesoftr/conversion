@@ -628,7 +628,7 @@ class AutopauseCog(commands.Cog, name="AutopauseCog"):
             return
 
         text = message.content or ""
-        if "Shortest Name:" not in text:
+        if "Best Name(s):" not in text:
             return
 
         pokemon = _extract_pokemon(text)
