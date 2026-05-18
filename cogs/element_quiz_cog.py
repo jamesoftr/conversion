@@ -125,14 +125,15 @@ def _build_timeout_embed(element: dict) -> discord.Embed:
     return embed
 
 
-def _build_leaderboard_embed(
+async def _build_leaderboard_embed(
     scores: dict[int, int],
     bot: commands.Bot,
     scope_label: str,
 ) -> discord.Embed:
     """
     Build a leaderboard embed from a {user_id: score} dict.
-    Resolves display names via bot.get_user(); falls back to 'Unknown User'.
+    Resolves display names via bot.get_user() (cache), falling back to
+    bot.fetch_user() (API call) so names always resolve correctly.
     """
     if not scores:
         embed = discord.Embed(
@@ -149,10 +150,15 @@ def _build_leaderboard_embed(
     medals = ["🥇", "🥈", "🥉"]
     lines  = []
     for rank, (user_id, score) in enumerate(top, start=1):
-        user   = bot.get_user(user_id)
-        name   = user.display_name if user else f"Unknown User ({user_id})"
-        medal  = medals[rank - 1] if rank <= 3 else f"`#{rank}`"
-        lines.append(f"{medal} **{name}** — `{score}` correct")
+        user = bot.get_user(user_id)
+        if user is None:
+            try:
+                user = await bot.fetch_user(user_id)
+            except discord.NotFound:
+                user = None
+        name  = user.display_name if user else "Unknown User"
+        medal = medals[rank - 1] if rank <= 3 else f"`#{rank}`"
+        lines.append(f"{medal} **{name}** <@{user_id}> — `{score}` correct")
 
     embed = discord.Embed(
         title="🏆 Element Quiz Leaderboard",
@@ -434,7 +440,7 @@ class ElementQuizCog(commands.Cog):
         else:
             scope_label = "Your personal DM quiz session"
 
-        embed = _build_leaderboard_embed(scope_scores, self.bot, scope_label)
+        embed = await _build_leaderboard_embed(scope_scores, self.bot, scope_label)
         await ctx.reply(embed=embed)
 
     # ── Error handler ─────────────────────────────────────────────────────────
