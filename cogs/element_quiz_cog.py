@@ -3,22 +3,29 @@ cogs/element_quiz_cog.py  —  Periodic Table Element Quiz.
 
 How it works
 ────────────
-1.  Counts every non-bot message sent in a guild channel.
+1.  Counts every non-bot message sent in a guild channel (or DM).
 2.  Every 10th message triggers an Element Quiz in that same channel.
 3.  The bot posts an embed showing the element name with alternating letters
     blanked out (e.g. "N_C_E_" for "Nickel"), plus the symbol and atomic number.
 4.  Players guess by just typing the element name anywhere in chat.
 5.  The bot scans every message for a matching element name — no command prefix
     needed.  First correct answer wins.
-6.  Winner is announced and the active quiz for that guild is cleared.
-7.  All state is in-memory (per restart); no DB required.
+6.  Winner is announced and the active quiz for that scope is cleared.
+7.  All state is in-memory (resets on restart); no DB required.
+8.  Messages starting with a Pokétwo ping are ignored entirely.
+9.  DMs work — each user gets their own independent quiz session.
 
-Commands  (Manage Guild only)
-──────────────────────────────
-  a!quiz skip          — skip / cancel the current quiz in this guild
+State keys
+──────────
+  Guild messages  →  key = guild_id        (int)
+  DM messages     →  key = f"dm_{user_id}" (str)
+
+Commands  (Manage Guild only — guild only, not usable in DMs)
+──────────────────────────────────────────────────────────────
+  a!quiz skip          — skip / cancel the current quiz
   a!quiz status        — show message counter & active quiz info
   a!quiz trigger       — manually fire a quiz right now (for testing)
-  a!quiz setchannel    — lock quizzes to a specific channel (optional)
+  a!quiz setchannel    — lock quizzes to a specific channel (optional, guild only)
   a!quiz clearchannel  — remove channel restriction
 """
 
@@ -32,34 +39,39 @@ from elements import ELEMENTS, get_by_name
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helpers
+# Constants
 # ─────────────────────────────────────────────────────────────────────────────
 
-MESSAGES_PER_QUIZ = 10   # trigger a quiz every N messages
+MESSAGES_PER_QUIZ = 10
+POKETWO_ID        = 716390085896962058
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pure helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _mask_name(name: str) -> str:
     """
     Return the element name with every other letter replaced by '_'.
     Spaces and hyphens are kept as-is.
-    Example:  "Nickel"  →  "N_C_E_"
-              "Iron"    →  "I_O_"
+    Example:  "Nickel"       →  "N_C_E_"
+              "Iron"         →  "I_O_"
+              "Einsteinium"  →  "E_N_T_I_I_M"
     """
-    result = []
+    result     = []
     letter_idx = 0
     for ch in name:
         if ch.isalpha():
             result.append(ch.upper() if letter_idx % 2 == 0 else "_")
             letter_idx += 1
         else:
-            result.append(ch)   # keep spaces / hyphens intact
+            result.append(ch)
     return "".join(result)
 
 
 def _build_quiz_embed(element: dict) -> discord.Embed:
     masked = _mask_name(element["name"])
-
-    embed = discord.Embed(
+    embed  = discord.Embed(
         title="🔬 Guess the Element!",
         description=(
             f"```\n{masked}\n```\n"
@@ -73,7 +85,7 @@ def _build_quiz_embed(element: dict) -> discord.Embed:
     return embed
 
 
-def _build_win_embed(element: dict, winner: discord.Member) -> discord.Embed:
+def _build_win_embed(element: dict, winner: discord.User | discord.Member) -> discord.Embed:
     embed = discord.Embed(
         title="✅ Correct!",
         description=(
@@ -95,86 +107,99 @@ class ElementQuizCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-        # Per-guild message counters  { guild_id: int }
-        self._counters: dict[int, int] = {}
+        # { scope_key: int }   — message counters
+        self._counters: dict[int | str, int] = {}
 
-        # Active quiz per guild  { guild_id: {"element": dict, "channel_id": int} }
-        self._active: dict[int, dict] = {}
+        # { scope_key: {"element": dict, "channel_id": int} }
+        self._active: dict[int | str, dict] = {}
 
-        # Optional channel restriction per guild  { guild_id: int | None }
+        # { guild_id: int | None }  — optional channel lock (guilds only)
         self._quiz_channel: dict[int, int | None] = {}
 
-        # Build a flat set of all element names (lowercase) for fast scanning
-        self._all_names_lower: set[str] = {e["name"].lower() for e in ELEMENTS}
+        # Sorted element names longest-first for greedy matching
+        self._sorted_names: list[str] = sorted(
+            (e["name"].lower() for e in ELEMENTS), key=len, reverse=True
+        )
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _increment(self, guild_id: int) -> int:
-        """Bump the message counter and return the new value."""
-        self._counters[guild_id] = self._counters.get(guild_id, 0) + 1
-        return self._counters[guild_id]
+    def _scope_key(self, message: discord.Message) -> int | str:
+        """Return a unique state key for the message's scope."""
+        if message.guild:
+            return message.guild.id
+        return f"dm_{message.author.id}"
 
-    def _reset_counter(self, guild_id: int) -> None:
-        self._counters[guild_id] = 0
+    def _increment(self, key: int | str) -> int:
+        self._counters[key] = self._counters.get(key, 0) + 1
+        return self._counters[key]
 
-    def _pick_element(self) -> dict:
-        return random.choice(ELEMENTS)
+    def _reset_counter(self, key: int | str) -> None:
+        self._counters[key] = 0
 
     def _find_element_in_text(self, text: str) -> dict | None:
         """
-        Scan `text` for any element name (whole-word, case-insensitive).
-        Returns the matching element dict or None.
+        Scan text for any element name (whole-word, case-insensitive).
+        Longer names are checked first to avoid "tin" matching inside "titanium".
         """
         text_lower = text.lower()
-        # Sort by length descending so longer names match before shorter subsets
-        for name_lower in sorted(self._all_names_lower, key=len, reverse=True):
-            # Use word-boundary regex to avoid partial matches (e.g. "iron" in "environment")
+        for name_lower in self._sorted_names:
             pattern = rf"\b{re.escape(name_lower)}\b"
             if re.search(pattern, text_lower):
                 return get_by_name(name_lower)
         return None
 
-    async def _post_quiz(self, channel: discord.TextChannel, guild_id: int) -> None:
-        element = self._pick_element()
-        self._active[guild_id] = {"element": element, "channel_id": channel.id}
+    async def _post_quiz(
+        self,
+        channel: discord.TextChannel | discord.DMChannel,
+        key: int | str,
+    ) -> None:
+        element           = random.choice(ELEMENTS)
+        self._active[key] = {"element": element, "channel_id": channel.id}
         await channel.send(embed=_build_quiz_embed(element))
 
     # ── Listener ─────────────────────────────────────────────────────────────
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # Ignore DMs, bots, and system messages
-        if not message.guild or message.author.bot or not message.content:
+        # Ignore bots and empty messages
+        if message.author.bot or not message.content:
             return
 
-        guild_id = message.guild.id
+        # Ignore messages that are a Pokétwo ping
+        if message.content.startswith(f"<@{POKETWO_ID}>"):
+            return
 
-        # ── Check for an active quiz answer ──────────────────────────────────
-        active = self._active.get(guild_id)
+        # Only handle guild text channels and DMs
+        is_dm    = isinstance(message.channel, discord.DMChannel)
+        is_guild = bool(message.guild)
+        if not is_dm and not is_guild:
+            return
+
+        key = self._scope_key(message)
+
+        # ── Check for active quiz answer ──────────────────────────────────────
+        active = self._active.get(key)
         if active:
             found = self._find_element_in_text(message.content)
-            if found:
-                correct = active["element"]
-                if found["name"].lower() == correct["name"].lower():
-                    # Winner!
-                    self._active.pop(guild_id, None)
-                    self._reset_counter(guild_id)
-                    await message.channel.send(
-                        embed=_build_win_embed(correct, message.author)
-                    )
-                    return   # don't count this message toward next quiz
-                # Wrong element named — silently ignore, keep quiz alive
+            if found and found["name"].lower() == active["element"]["name"].lower():
+                self._active.pop(key, None)
+                self._reset_counter(key)
+                await message.channel.send(
+                    embed=_build_win_embed(active["element"], message.author)
+                )
+                return  # don't count this message toward the next quiz
 
         # ── Count toward next quiz trigger ────────────────────────────────────
-        # Respect optional channel lock
-        locked_channel = self._quiz_channel.get(guild_id)
-        if locked_channel and message.channel.id != locked_channel:
-            return   # this channel doesn't count
+        # Guild: respect optional channel lock
+        if is_guild:
+            locked_channel = self._quiz_channel.get(message.guild.id)
+            if locked_channel and message.channel.id != locked_channel:
+                return  # this channel doesn't count
 
-        count = self._increment(guild_id)
-        if count >= MESSAGES_PER_QUIZ and guild_id not in self._active:
-            self._reset_counter(guild_id)
-            await self._post_quiz(message.channel, guild_id)
+        count = self._increment(key)
+        if count >= MESSAGES_PER_QUIZ and key not in self._active:
+            self._reset_counter(key)
+            await self._post_quiz(message.channel, key)
 
     # ── Commands ──────────────────────────────────────────────────────────────
 
@@ -186,26 +211,26 @@ class ElementQuizCog(commands.Cog):
     @quiz.command(name="skip")
     @commands.has_permissions(manage_guild=True)
     async def quiz_skip(self, ctx: commands.Context):
-        """Skip / cancel the currently active element quiz in this guild."""
-        active = self._active.pop(ctx.guild.id, None)
+        """Skip / cancel the currently active element quiz."""
+        key    = self._scope_key(ctx.message)
+        active = self._active.pop(key, None)
         if active:
-            name = active["element"]["name"]
-            await ctx.reply(f"⏭️ Quiz skipped. The element was **{name}**.")
+            await ctx.reply(f"⏭️ Quiz skipped. The element was **{active['element']['name']}**.")
         else:
             await ctx.reply("ℹ️ No active quiz to skip right now.")
 
     @quiz.command(name="status")
     async def quiz_status(self, ctx: commands.Context):
-        """Show the current message counter and quiz state for this guild."""
-        guild_id = ctx.guild.id
-        count   = self._counters.get(guild_id, 0)
-        active  = self._active.get(guild_id)
-        locked  = self._quiz_channel.get(guild_id)
+        """Show the current message counter and quiz state."""
+        key    = self._scope_key(ctx.message)
+        count  = self._counters.get(key, 0)
+        active = self._active.get(key)
 
         lines = [
             f"**Messages until next quiz:** `{MESSAGES_PER_QUIZ - count}` "
             f"*(counter: {count}/{MESSAGES_PER_QUIZ})*",
         ]
+
         if active:
             lines.append(
                 f"**Active quiz:** `{_mask_name(active['element']['name'])}` "
@@ -214,10 +239,14 @@ class ElementQuizCog(commands.Cog):
         else:
             lines.append("**Active quiz:** None")
 
-        if locked:
-            lines.append(f"**Quiz channel:** <#{locked}>")
+        if ctx.guild:
+            locked = self._quiz_channel.get(ctx.guild.id)
+            lines.append(
+                f"**Quiz channel:** <#{locked}>" if locked
+                else "**Quiz channel:** Any (wherever 10th message lands)"
+            )
         else:
-            lines.append("**Quiz channel:** Any (wherever 10th message lands)")
+            lines.append("**Scope:** DM (your personal quiz session)")
 
         embed = discord.Embed(
             title="🔬 Element Quiz Status",
@@ -230,22 +259,25 @@ class ElementQuizCog(commands.Cog):
     @commands.has_permissions(manage_guild=True)
     async def quiz_trigger(self, ctx: commands.Context):
         """Manually fire an element quiz right now (useful for testing)."""
-        guild_id = ctx.guild.id
-        if guild_id in self._active:
+        key = self._scope_key(ctx.message)
+        if key in self._active:
             await ctx.reply("⚠️ A quiz is already active! Use `a!quiz skip` first.")
             return
-        self._reset_counter(guild_id)
-        await self._post_quiz(ctx.channel, guild_id)
+        self._reset_counter(key)
+        await self._post_quiz(ctx.channel, key)
 
     @quiz.command(name="setchannel")
     @commands.has_permissions(manage_guild=True)
     async def quiz_setchannel(self, ctx: commands.Context, channel: discord.TextChannel = None):
         """
-        Lock quizzes to a specific channel.
+        Lock quizzes to a specific channel (guild only).
         Only messages in that channel will count toward the quiz trigger.
 
         Usage: a!quiz setchannel #general
         """
+        if not ctx.guild:
+            await ctx.reply("ℹ️ Channel locking only applies in servers, not DMs.")
+            return
         target = channel or ctx.channel
         self._quiz_channel[ctx.guild.id] = target.id
         await ctx.reply(f"✅ Element quizzes will now only trigger in {target.mention}.")
@@ -254,6 +286,9 @@ class ElementQuizCog(commands.Cog):
     @commands.has_permissions(manage_guild=True)
     async def quiz_clearchannel(self, ctx: commands.Context):
         """Remove the channel restriction — quizzes trigger wherever the 10th message lands."""
+        if not ctx.guild:
+            await ctx.reply("ℹ️ Channel locking only applies in servers, not DMs.")
+            return
         self._quiz_channel.pop(ctx.guild.id, None)
         await ctx.reply("✅ Channel restriction removed. Quizzes can now trigger in any channel.")
 
