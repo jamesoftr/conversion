@@ -9,7 +9,7 @@ How it works
     blanked out (e.g. "N_C_E_" for "Nickel"), plus the symbol and atomic number.
 4.  Players guess by just typing the element name anywhere in chat.
 5.  The bot scans every message for a matching element name — no command prefix
-    needed.  First correct answer wins.
+    needed.  First correct answer winss.
 6.  Winner is announced with their updated total score. The quiz is then cleared.
 7.  If no one guesses within QUIZ_TIMEOUT_SECONDS, the bot reveals the answer.
 8.  All state is in-memory (resets on restart); no DB required.
