@@ -50,6 +50,7 @@ MESSAGES_PER_QUIZ    = 10
 POKETWO_ID           = 716390085896962058
 QUIZ_TIMEOUT_SECONDS = 120   # seconds before the quiz auto-expires with no winner
 LEADERBOARD_SIZE     = 10   # max entries shown in the scores embed
+INCENSE_INTERVAL     = 10   # seconds between incense quiz spawns
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -125,6 +126,24 @@ def _build_timeout_embed(element: dict) -> discord.Embed:
     return embed
 
 
+def _build_incense_embed(element: dict, last_name: str | None) -> discord.Embed:
+    masked = _mask_name(element["name"])
+    prev   = f"Last one was **{last_name}**. " if last_name else ""
+    embed  = discord.Embed(
+        title="🧪 Incense Quiz!",
+        description=(
+            f"{prev}Guess the new one!\n\n"
+            f"```\n{masked}\n```\n"
+            f"**Symbol:** `{element['symbol']}`\n"
+            f"**Atomic Number:** `{element['atomic_number']}`\n\n"
+            f"*Type the element name in chat to answer!*"
+        ),
+        color=discord.Color.purple(),
+    )
+    embed.set_footer(text=f"Next element in {INCENSE_INTERVAL}s whether or not this is guessed • Use `a!quiz incense stop` to end")
+    return embed
+
+
 async def _build_leaderboard_embed(
     scores: dict[int, int],
     bot: commands.Bot,
@@ -188,6 +207,13 @@ class ElementQuizCog(commands.Cog):
 
         # Timeout tasks — { scope_key: asyncio.Task }
         self._timeout_tasks: dict[int | str, asyncio.Task] = {}
+
+        # Incense sessions — { channel_id: asyncio.Task }
+        self._incense_tasks: dict[int, asyncio.Task] = {}
+        # Last element shown by incense per channel — { channel_id: str }
+        self._incense_last:  dict[int, str] = {}
+        # Current incense element per channel — { channel_id: dict }
+        self._incense_active: dict[int, dict] = {}
 
         # Sorted element names longest-first for greedy matching
         self._sorted_names: list[str] = sorted(
@@ -307,6 +333,20 @@ class ElementQuizCog(commands.Cog):
                     embed=_build_win_embed(active["element"], message.author, new_total)
                 )
                 return  # don't count this message toward the next quiz
+
+        # ── Check for incense answer ──────────────────────────────────────────
+        incense_el = self._incense_active.get(message.channel.id)
+        if incense_el:
+            found = self._find_element_in_text(message.content)
+            if found and found["name"].lower() == incense_el["name"].lower():
+                self._incense_active.pop(message.channel.id, None)
+                self._incense_last[message.channel.id] = incense_el["name"]
+
+                new_total = await self._add_score(key, message.author.id)
+
+                await message.channel.send(
+                    embed=_build_win_embed(incense_el, message.author, new_total)
+                )
 
         # ── Count toward next quiz trigger ────────────────────────────────────
         # Guild: respect optional channel lock
@@ -442,6 +482,72 @@ class ElementQuizCog(commands.Cog):
 
         embed = await _build_leaderboard_embed(scope_scores, self.bot, scope_label)
         await ctx.reply(embed=embed)
+
+    # ── Incense ───────────────────────────────────────────────────────────────
+
+    async def _incense_loop(
+        self,
+        channel: discord.TextChannel,
+        scope_key: int | str,
+    ) -> None:
+        """Spawn a new element every INCENSE_INTERVAL seconds until stopped."""
+        try:
+            while channel.id in self._incense_tasks:
+                element = random.choice(ELEMENTS)
+                last    = self._incense_last.get(channel.id)
+
+                # Don't repeat the same element back-to-back
+                while last and element["name"] == last:
+                    element = random.choice(ELEMENTS)
+
+                self._incense_active[channel.id] = element
+                await channel.send(embed=_build_incense_embed(element, last))
+                await asyncio.sleep(INCENSE_INTERVAL)
+
+                # If still unanswered, reveal answer before next spawn
+                if channel.id in self._incense_active:
+                    answered = self._incense_active.pop(channel.id, None)
+                    if answered:
+                        self._incense_last[channel.id] = answered["name"]
+                        await channel.send(
+                            f"⏰ Nobody got it! The element was **{answered['name']}** "
+                            f"(`{answered['symbol']}` · #{answered['atomic_number']})"
+                        )
+        except asyncio.CancelledError:
+            self._incense_active.pop(channel.id, None)
+        finally:
+            self._incense_tasks.pop(channel.id, None)
+            self._incense_last.pop(channel.id, None)
+
+    @quiz.group(name="incense", invoke_without_command=True)
+    async def quiz_incense(self, ctx: commands.Context):
+        """Start a rapid-fire incense quiz — a new element every 10 seconds."""
+        if not self._is_admin(ctx):
+            await ctx.reply("❌ You need **Manage Guild** permission to use this.")
+            return
+        if ctx.channel.id in self._incense_tasks:
+            await ctx.reply("⚠️ Incense is already running here! Use `a!quiz incense stop` to end it.")
+            return
+
+        scope_key = self._scope_key(ctx.message)
+        task = asyncio.get_event_loop().create_task(
+            self._incense_loop(ctx.channel, scope_key)
+        )
+        self._incense_tasks[ctx.channel.id] = task
+        await ctx.reply("🧪 **Incense started!** Elements will spawn every 10 seconds. Use `a!quiz incense stop` to end.")
+
+    @quiz_incense.command(name="stop")
+    async def quiz_incense_stop(self, ctx: commands.Context):
+        """Stop the incense quiz running in this channel."""
+        if not self._is_admin(ctx):
+            await ctx.reply("❌ You need **Manage Guild** permission to use this.")
+            return
+        task = self._incense_tasks.pop(ctx.channel.id, None)
+        if task:
+            task.cancel()
+            await ctx.reply("🛑 Incense stopped.")
+        else:
+            await ctx.reply("ℹ️ No incense is running in this channel.")
 
     # ── Error handler ─────────────────────────────────────────────────────────
 
