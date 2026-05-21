@@ -17,7 +17,9 @@ Fonts
 
 Incense
 ───────
-  Auto (startup)  — infinite spawns, INCENSE_AUTO_INTERVAL seconds each
+  Auto (startup)  — on-click mode: posts ONE quiz on startup; the next spawn
+                    fires only when someone answers the current one correctly.
+                    Buttons stay active indefinitely (no timeout).
   Manual          — INCENSE_MANUAL_SPAWNS spawns, INCENSE_INTERVAL seconds each
 
 Commands  (Manage Guild)
@@ -425,10 +427,11 @@ class MultiChoiceView(discord.ui.View):
         self,
         correct:    dict,
         choices:    list[dict],
-        on_correct,     # async (interaction, element) → None
-        on_timeout,     # async () → None
+        on_correct,          # async (interaction, element) → None
+        on_timeout,          # async () → None
+        timeout:    Optional[float] = QUIZ_TIMEOUT_SECONDS,
     ):
-        super().__init__(timeout=QUIZ_TIMEOUT_SECONDS)
+        super().__init__(timeout=timeout)
         self._correct         = correct
         self._on_correct      = on_correct
         self._on_timeout      = on_timeout
@@ -539,13 +542,11 @@ class ElementQuizCog(commands.Cog):
                 except discord.HTTPException:
                     log.warning("[ElementQuiz] Auto-incense: channel %s not found", INCENSE_AUTO_CHANNEL_ID)
                     return
-            if ch.id in self._incense_tasks:
-                return
             scope = ch.guild.id if getattr(ch, "guild", None) else f"dm_{INCENSE_AUTO_CHANNEL_ID}"
-            self._incense_tasks[ch.id] = asyncio.get_running_loop().create_task(
-                self._incense_loop(ch, scope, interval=INCENSE_AUTO_INTERVAL, max_spawns=None)
-            )
-            log.info("[ElementQuiz] Auto-incense started in #%s (%s)", ch.name, ch.id)
+            # Mark the channel as having auto-incense active (sentinel task)
+            self._incense_tasks[ch.id] = asyncio.get_running_loop().create_task(asyncio.sleep(0))
+            log.info("[ElementQuiz] Auto-incense (on-click) started in #%s (%s)", ch.name, ch.id)
+            await self._auto_incense_spawn(ch, scope)
 
         asyncio.get_running_loop().create_task(_start())
 
@@ -680,7 +681,83 @@ class ElementQuizCog(commands.Cog):
             self._active[key]["view_msg"] = msg
             self._last_button_msg[channel.id] = (msg, view)
 
-    # ── Incense loop ──────────────────────────────────────────────────────────
+    # ── Auto-incense (on-click / event-driven) ────────────────────────────────
+
+    async def _auto_incense_spawn(
+        self,
+        channel:   discord.TextChannel,
+        scope_key: int | str,
+    ) -> None:
+        """
+        Post a single incense quiz.  The next spawn is triggered only when
+        someone answers correctly — buttons stay active indefinitely until then.
+        For NAME quizzes the on_message handler calls this after a correct answer.
+        For SYMBOL/ATOMIC quizzes the button callback calls this after a correct click.
+        """
+        if channel.id not in self._incense_tasks:
+            return   # auto-incense was stopped
+
+        try:
+            last_name = self._incense_last.get(channel.id)
+            element   = random.choice(ELEMENTS)
+            while last_name and element["name"] == last_name:
+                element = random.choice(ELEMENTS)
+
+            quiz_type = random.choice(list(QuizType))
+
+            mask  = _mask_name(element["name"]) if quiz_type == QuizType.NAME else None
+            file  = _make_element_image(element, revealed=False, quiz_type=quiz_type, hint_mask=mask)
+            embed = _quiz_embed(
+                element, quiz_type,
+                incense=True,
+                last_name=last_name,
+                spawns_remaining=None,   # infinite
+                spawn_interval=0,
+            )
+
+            if quiz_type == QuizType.NAME:
+                # Register as the active incense NAME quiz; on_message will
+                # detect a correct answer and call _auto_incense_spawn again.
+                self._incense_active[channel.id] = element
+                await channel.send(embed=embed, file=file)
+
+            else:
+                # Build a no-timeout view; a correct click spawns the next quiz.
+                async def on_correct(
+                    interaction: discord.Interaction,
+                    el: dict,
+                    _sk=scope_key,
+                    _ch=channel,
+                ):
+                    self._incense_last[_ch.id] = el["name"]
+                    total = await self._add_score(_sk, interaction.user.id)
+                    f2    = _make_element_image(el, revealed=True)
+                    await interaction.followup.send(
+                        embed=_win_embed(el, interaction.user, total), file=f2
+                    )
+                    # Spawn the next question now that this one was answered
+                    asyncio.get_running_loop().create_task(
+                        self._auto_incense_spawn(_ch, _sk)
+                    )
+
+                # No on_timeout needed — buttons never time out in auto-incense
+                async def on_timeout_noop():
+                    pass
+
+                view = MultiChoiceView(
+                    element,
+                    _pick_choices(element),
+                    on_correct,
+                    on_timeout_noop,
+                    timeout=None,          # buttons stay active forever
+                )
+                msg = await channel.send(embed=embed, file=file, view=view)
+                self._last_button_msg[channel.id] = (msg, view)
+
+        except Exception as exc:
+            log.error("[ElementQuiz] Auto-incense spawn error in %s: %r", channel.id, exc)
+
+    # ── Manual incense loop ───────────────────────────────────────────────────
 
     async def _incense_loop(
         self,
@@ -689,8 +766,8 @@ class ElementQuizCog(commands.Cog):
         interval:   int  = INCENSE_INTERVAL,
         max_spawns: Optional[int] = INCENSE_MANUAL_SPAWNS,
     ) -> None:
-        spawned:           int                       = 0
-        retry_after_error: bool                      = False
+        spawned:           int  = 0
+        retry_after_error: bool = False
 
         while channel.id in self._incense_tasks:
             if max_spawns is not None and spawned >= max_spawns:
@@ -709,7 +786,6 @@ class ElementQuizCog(commands.Cog):
                     return
 
             try:
-                # Disable buttons from the previous round before posting the next one
                 await self._disable_last_buttons(channel.id)
 
                 last_name = self._incense_last.get(channel.id)
@@ -837,9 +913,16 @@ class ElementQuizCog(commands.Cog):
                 await message.channel.send(
                     embed=_win_embed(found, message.author, total), file=f2
                 )
+                # Signal the manual incense loop (if running)
                 evt = self._incense_answered.get(message.channel.id)
                 if evt:
                     evt.set()
+                # For auto-incense (on-click mode): spawn the next question now
+                elif message.channel.id in self._incense_tasks:
+                    scope = self._scope_key(message)
+                    asyncio.get_running_loop().create_task(
+                        self._auto_incense_spawn(message.channel, scope)
+                    )
 
         # ── Message counter → regular quiz ────────────────────────────────────
         if is_guild:
