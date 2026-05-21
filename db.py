@@ -271,7 +271,8 @@ async def get_leaderboard(guild_id: int, limit: int = 10) -> list[dict]:
         {"$group": {
             "_id":        "$user_id",
             "total":      {"$sum": 1},
-            "shiny":      {"$sum": {"$cond": ["$shiny",      1, 0]}},
+            # exclude chain_shiny catches from plain shiny count to avoid double-counting
+            "shiny":      {"$sum": {"$cond": [{"$and": ["$shiny", {"$not": ["$chain_shiny"]}]}, 1, 0]}},
             "gigantamax": {"$sum": {"$cond": ["$gigantamax", 1, 0]}},
         }},
         {"$sort":  {"total": -1}},
@@ -289,7 +290,8 @@ async def get_leaderboard_alltime(guild_id: int, limit: int = 10) -> list[dict]:
         {"$group": {
             "_id":        "$user_id",
             "total":      {"$sum": 1},
-            "shiny":      {"$sum": {"$cond": ["$shiny",      1, 0]}},
+            # exclude chain_shiny catches from plain shiny count to avoid double-counting
+            "shiny":      {"$sum": {"$cond": [{"$and": ["$shiny", {"$not": ["$chain_shiny"]}]}, 1, 0]}},
             "gigantamax": {"$sum": {"$cond": ["$gigantamax", 1, 0]}},
         }},
         {"$sort":  {"total": -1}},
@@ -351,7 +353,8 @@ async def get_shiny_leaderboard(guild_id: int, limit: int = 10) -> list[dict]:
         }},
         {"$group": {
             "_id":         "$user_id",
-            "shiny":       {"$sum": {"$cond": ["$shiny",       1, 0]}},
+            # chain_shiny catches may also have shiny=True; count them only in chain_shiny
+            "shiny":       {"$sum": {"$cond": [{"$and": ["$shiny", {"$not": ["$chain_shiny"]}]}, 1, 0]}},
             "chain_shiny": {"$sum": {"$cond": ["$chain_shiny", 1, 0]}},
             "total":       {"$sum": 1},
         }},
@@ -376,7 +379,8 @@ async def get_shiny_leaderboard_alltime(guild_id: int, limit: int = 10) -> list[
         }},
         {"$group": {
             "_id":         "$user_id",
-            "shiny":       {"$sum": {"$cond": ["$shiny",       1, 0]}},
+            # chain_shiny catches may also have shiny=True; count them only in chain_shiny
+            "shiny":       {"$sum": {"$cond": [{"$and": ["$shiny", {"$not": ["$chain_shiny"]}]}, 1, 0]}},
             "chain_shiny": {"$sum": {"$cond": ["$chain_shiny", 1, 0]}},
             "total":       {"$sum": 1},
         }},
