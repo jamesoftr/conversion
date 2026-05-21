@@ -55,7 +55,7 @@ INCENSE_INTERVAL     = 20
 WRONG_COOLDOWN       = 5    # seconds a user must wait after a wrong button click
 
 # Set to a channel ID to auto-start incense on bot startup, or None to disable.
-INCENSE_AUTO_CHANNEL_ID: int | None = 1506869977636933743  # e.g. 123456789012345678
+INCENSE_AUTO_CHANNEL_ID: int | None = None  # e.g. 123456789012345678
 # Interval (seconds) used specifically for the auto-startup incense session.
 # The normal a!quiz incense command still uses INCENSE_INTERVAL.
 INCENSE_AUTO_INTERVAL    = 30
@@ -617,11 +617,28 @@ class ElementQuizCog(commands.Cog):
                         on_timeout=on_timeout,
                     )
                     await channel.send(embed=embed, view=view)
-                    # Wait until answered or timed out before next round
-                    await asyncio.wait_for(answered.wait(), timeout=interval + 5)
+                    # Wait until answered or timed out before next round.
+                    # TimeoutError here is normal (nobody answered) — just continue.
+                    try:
+                        await asyncio.wait_for(answered.wait(), timeout=interval + 5)
+                    except asyncio.TimeoutError:
+                        pass
 
-        except (asyncio.CancelledError, asyncio.TimeoutError):
+        except asyncio.CancelledError:
+            # Intentional stop (a!quiz incense stop or bot shutdown) — clean exit.
             self._incense_active.pop(channel.id, None)
+        except Exception as exc:
+            # Unexpected error (HTTP blip, Discord outage, etc.) — log and restart.
+            print(f"[ElementQuiz] Incense loop crashed in {channel.id}: {exc!r} — restarting in 10s")
+            self._incense_active.pop(channel.id, None)
+            await asyncio.sleep(10)
+            # Re-register and restart the loop so it survives transient errors.
+            if channel.id not in self._incense_tasks:
+                task = asyncio.get_event_loop().create_task(
+                    self._incense_loop(channel, scope_key, interval=interval)
+                )
+                self._incense_tasks[channel.id] = task
+                return  # this coroutine is done; the new task carries on
         finally:
             self._incense_tasks.pop(channel.id, None)
             self._incense_last.pop(channel.id, None)
