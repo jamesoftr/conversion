@@ -1,59 +1,65 @@
 """
-cogs/admin_cog.py — Bot owner admin commands (hybrid: prefix + slash).
+cogs/admin_cog.py — Pure prefix-only admin commands.
 
-After loading, sync slash commands once:
-    await bot.tree.sync()
-
-Commands
-────────
-role add <role_name> [guild_id]        Track a role
-role remove <role_name> [guild_id]     Stop tracking a role
-role list [guild_id]                   List all tracked roles
-
-admin info server [guild_id]           Server overview embed
-admin info user <user> [guild_id]      User overview embed
-admin channels [guild_id]              Channel breakdown embed
-admin ping                             Show bot latency
-admin reload <cog>                     Reload a cog (owner only)
+Commands:
+    !roleadd    @user <role name>   Assign a role to a user
+    !roleremove @user <role name>   Remove a role from a user
+    !rolelist                       List all server roles sorted by position (highest first)
+    !userinfo   <@user or user_id>  Detailed user overview
+    !serverinfo                     Detailed server overview
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional
 
 import discord
-from discord import app_commands
 from discord.ext import commands
-
-import db
-from config import E
 
 log = logging.getLogger(__name__)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Misc helpers
+# Custom check — passes if the invoker is the bot owner OR has the given perm
+# ──────────────────────────────────────────────────────────────────────────────
+
+def owner_or_permissions(**perms):
+    """
+    Decorator that allows the command if the caller is the bot owner
+    OR has all of the specified guild permissions.
+    """
+    async def predicate(ctx: commands.Context) -> bool:
+        if await ctx.bot.is_owner(ctx.author):
+            return True
+        # Fall back to the normal permission check
+        missing = [
+            perm for perm, value in perms.items()
+            if getattr(ctx.permissions, perm, None) != value
+        ]
+        if missing:
+            raise commands.MissingPermissions(missing)
+        return True
+    return commands.check(predicate)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _utc(dt: datetime) -> datetime:
-    """Ensure *dt* is timezone-aware (UTC)."""
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 def _fmt_ts(dt: datetime) -> str:
-    """``<t:UNIX:D>  (<t:UNIX:R>)`` Discord timestamp string."""
     unix = int(_utc(dt).timestamp())
     return f"<t:{unix}:D>  (<t:{unix}:R>)"
 
 
 def _humanise_delta(dt: datetime) -> str:
-    """'3 days, 2h 15m ago' style string from a past datetime."""
     diff = datetime.now(timezone.utc) - _utc(dt)
     d, rem = diff.days, diff.seconds
     h, m = rem // 3600, (rem % 3600) // 60
-
     if d:
         return f"{d} day{'s' if d != 1 else ''}, {h}h {m}m ago"
     if h:
@@ -63,19 +69,19 @@ def _humanise_delta(dt: datetime) -> str:
 
 def _status_icon(status: discord.Status) -> str:
     return {
-        discord.Status.online: "🟢",
-        discord.Status.idle: "🟡",
-        discord.Status.dnd: "🔴",
+        discord.Status.online:  "🟢",
+        discord.Status.idle:    "🟡",
+        discord.Status.dnd:     "🔴",
         discord.Status.offline: "⚫",
     }.get(status, "⚫")
 
 
 def _verification_label(level: discord.VerificationLevel) -> str:
     return {
-        discord.VerificationLevel.none: "None",
-        discord.VerificationLevel.low: "Low — verified e-mail",
-        discord.VerificationLevel.medium: "Medium — registered 5+ min",
-        discord.VerificationLevel.high: "High — member 10+ min",
+        discord.VerificationLevel.none:      "None",
+        discord.VerificationLevel.low:       "Low — verified e-mail",
+        discord.VerificationLevel.medium:    "Medium — registered 5+ min",
+        discord.VerificationLevel.high:      "High — member 10+ min",
         discord.VerificationLevel.very_high: "Highest — verified phone",
     }.get(level, "Unknown")
 
@@ -85,13 +91,13 @@ def _verification_label(level: discord.VerificationLevel) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _build_server_embed(guild: discord.Guild) -> discord.Embed:
-    text_ch = sum(1 for c in guild.channels if isinstance(c, discord.TextChannel))
+    text_ch  = sum(1 for c in guild.channels if isinstance(c, discord.TextChannel))
     voice_ch = sum(1 for c in guild.channels if isinstance(c, discord.VoiceChannel))
     stage_ch = sum(1 for c in guild.channels if isinstance(c, discord.StageChannel))
     forum_ch = sum(1 for c in guild.channels if isinstance(c, discord.ForumChannel))
-    categories = sum(1 for c in guild.channels if isinstance(c, discord.CategoryChannel))
+    cats     = sum(1 for c in guild.channels if isinstance(c, discord.CategoryChannel))
 
-    bots = sum(1 for m in guild.members if m.bot) if guild.members else "N/A"
+    bots   = sum(1 for m in guild.members if m.bot) if guild.members else "N/A"
     humans = (guild.member_count - bots) if isinstance(bots, int) else "N/A"
 
     embed = discord.Embed(
@@ -104,7 +110,6 @@ def _build_server_embed(guild: discord.Guild) -> discord.Embed:
         ),
         color=discord.Color.blurple(),
     )
-
     if guild.icon:
         embed.set_thumbnail(url=guild.icon.url)
     if guild.banner:
@@ -115,60 +120,42 @@ def _build_server_embed(guild: discord.Guild) -> discord.Embed:
         value=f"Total: **{guild.member_count:,}**\nHumans: **{humans}**\nBots: **{bots}**",
         inline=True,
     )
-
     embed.add_field(
         name="📢 Channels",
         value=(
-            f"Text: **{text_ch}**\n"
-            f"Voice: **{voice_ch}**\n"
-            f"Stage: **{stage_ch}** | Forum: **{forum_ch}**\n"
-            f"Categories: **{categories}**"
+            f"Text: **{text_ch}**\nVoice: **{voice_ch}**\n"
+            f"Stage: **{stage_ch}** | Forum: **{forum_ch}**\nCategories: **{cats}**"
         ),
         inline=True,
     )
-
-    embed.add_field(
-        name="🏷️ Roles",
-        value=f"**{len(guild.roles)}** total",
-        inline=True,
-    )
-
-    embed.add_field(
-        name="🔒 Verification",
-        value=_verification_label(guild.verification_level),
-        inline=True,
-    )
-
+    embed.add_field(name="🏷️ Roles",       value=f"**{len(guild.roles)}** total",               inline=True)
+    embed.add_field(name="🔒 Verification", value=_verification_label(guild.verification_level), inline=True)
     embed.add_field(
         name="💬 Locale / Premium",
         value=(
             f"Locale: **{guild.preferred_locale}**\n"
-            f"Boost tier: **{guild.premium_tier}** "
-            f"({guild.premium_subscription_count} boosts)"
+            f"Boost tier: **{guild.premium_tier}** ({guild.premium_subscription_count} boosts)"
         ),
         inline=True,
     )
-
     if guild.features:
-        shown = sorted(guild.features)[:6]
-        extra = len(guild.features) - len(shown)
+        shown     = sorted(guild.features)[:6]
+        extra     = len(guild.features) - len(shown)
         feat_text = "  ".join(f"`{f}`" for f in shown)
         if extra:
             feat_text += f"  +{extra} more"
         embed.add_field(name="✨ Features", value=feat_text, inline=False)
 
-    embed.set_footer(text=f"Guild ID: {guild.id}  •  Requested via admin cog")
+    embed.set_footer(text=f"Guild ID: {guild.id}")
     return embed
 
 
-def _build_user_embed(
-    user: discord.User | discord.Member,
-    member: discord.Member | None,
-) -> discord.Embed:
+def _build_user_embed(member: discord.Member) -> discord.Embed:
+    user = member._user  # underlying User object
     discriminator = f"#{user.discriminator}" if getattr(user, "discriminator", "0") != "0" else ""
 
     embed = discord.Embed(
-        title=f"👤  {user.display_name}",
+        title=f"👤  {member.display_name}",
         description=(
             f"**Tag:** `{user.name}{discriminator}`\n"
             f"**ID:** `{user.id}`\n"
@@ -176,143 +163,52 @@ def _build_user_embed(
         ),
         color=discord.Color.purple(),
     )
-    embed.set_thumbnail(url=user.display_avatar.url)
+    embed.set_thumbnail(url=member.display_avatar.url)
 
     embed.add_field(
         name="📅 Account Created",
         value=f"{_fmt_ts(user.created_at)}\n{_humanise_delta(user.created_at)}",
         inline=True,
     )
+    embed.add_field(
+        name="📥 Joined Server",
+        value=f"{_fmt_ts(member.joined_at)}\n{_humanise_delta(member.joined_at)}",
+        inline=True,
+    )
 
-    if member:
-        status_icon = _status_icon(member.status) if hasattr(member, "status") else "⚫"
+    status_icon = _status_icon(member.status)
+    embed.add_field(name="🔵 Status", value=f"{status_icon} {member.status}", inline=True)
+
+    roles = [r for r in member.roles if r != member.guild.default_role]
+    roles.sort(key=lambda r: r.position, reverse=True)
+    if roles:
+        shown     = roles[:12]
+        role_text = " ".join(r.mention for r in shown)
+        if len(roles) > 12:
+            role_text += f"  +{len(roles) - 12} more"
+        embed.add_field(name=f"🏷️ Roles ({len(roles)})", value=role_text, inline=False)
+
+    key_perms = [
+        name.replace("_", " ").title()
+        for name, value in member.guild_permissions
+        if value and name in {
+            "administrator", "manage_guild", "manage_roles",
+            "manage_channels", "manage_messages", "kick_members",
+            "ban_members", "mention_everyone", "manage_webhooks",
+            "view_audit_log",
+        }
+    ]
+    if key_perms:
         embed.add_field(
-            name="📥 Joined Server",
-            value=f"{_fmt_ts(member.joined_at)}\n{_humanise_delta(member.joined_at)}",
-            inline=True,
-        )
-
-        embed.add_field(
-            name="🔵 Status",
-            value=f"{status_icon} {member.status}",
-            inline=True,
-        )
-
-        # Roles (excluding @everyone)
-        roles = [r for r in member.roles if r != member.guild.default_role]
-        roles.sort(key=lambda r: r.position, reverse=True)
-        if roles:
-            shown = roles[:12]
-            role_text = " ".join(r.mention for r in shown)
-            if len(roles) > 12:
-                role_text += f"  +{len(roles) - 12} more"
-            embed.add_field(name=f"🏷️ Roles ({len(roles)})", value=role_text, inline=False)
-
-        # Key permissions
-        key_perms = [
-            name.replace("_", " ").title()
-            for name, value in member.guild_permissions
-            if value and name in {
-                "administrator", "manage_guild", "manage_roles",
-                "manage_channels", "manage_messages", "kick_members",
-                "ban_members", "mention_everyone", "manage_webhooks",
-                "view_audit_log",
-            }
-        ]
-        if key_perms:
-            embed.add_field(
-                name="🔑 Key Permissions",
-                value="  ".join(f"`{p}`" for p in key_perms),
-                inline=False,
-            )
-
-        if member.premium_since:
-            embed.add_field(
-                name="💎 Boosting Since",
-                value=_fmt_ts(member.premium_since),
-                inline=True,
-            )
-
-    else:
-        embed.add_field(
-            name="⚠️ Guild Membership",
-            value="User is **not** in this guild.",
+            name="🔑 Key Permissions",
+            value="  ".join(f"`{p}`" for p in key_perms),
             inline=False,
         )
+    if member.premium_since:
+        embed.add_field(name="💎 Boosting Since", value=_fmt_ts(member.premium_since), inline=True)
 
     embed.set_footer(text=f"User ID: {user.id}")
     return embed
-
-
-def _build_channels_embed(guild: discord.Guild) -> discord.Embed:
-    categories: list[discord.CategoryChannel] = sorted(
-        (c for c in guild.channels if isinstance(c, discord.CategoryChannel)),
-        key=lambda c: c.position,
-    )
-    uncategorised = [
-        c for c in guild.channels
-        if c.category is None and not isinstance(c, discord.CategoryChannel)
-    ]
-
-    embed = discord.Embed(
-        title=f"📢  Channel Breakdown — {guild.name}",
-        color=discord.Color.green(),
-    )
-
-    def _ch_line(ch: discord.abc.GuildChannel) -> str:
-        icons = {
-            discord.TextChannel: "💬",
-            discord.VoiceChannel: "🔊",
-            discord.StageChannel: "🎙️",
-            discord.ForumChannel: "🗂️",
-        }
-        icon = icons.get(type(ch), "•")
-        nsfw = " 🔞" if getattr(ch, "nsfw", False) else ""
-        return f"{icon} {ch.name}{nsfw}"
-
-    # Uncategorised first
-    if uncategorised:
-        lines = "\n".join(_ch_line(c) for c in uncategorised[:15])
-        embed.add_field(name="⬜ Uncategorised", value=lines or "—", inline=False)
-
-    for cat in categories[:20]:
-        children = sorted(cat.channels, key=lambda c: c.position)
-        lines = "\n".join(_ch_line(c) for c in children[:15])
-        if len(children) > 15:
-            lines += f"\n… +{len(children) - 15} more"
-        embed.add_field(
-            name=f"📂 {cat.name.upper()}  ({len(children)})",
-            value=lines or "*(empty)*",
-            inline=False,
-        )
-
-    total = len(guild.channels)
-    embed.set_footer(
-        text=f"Total channels: {total}  |  Guild ID: {guild.id}"
-    )
-    return embed
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Guild resolver
-# ──────────────────────────────────────────────────────────────────────────────
-
-async def _resolve_guild(
-    bot: commands.Bot,
-    ctx_guild: discord.Guild | None,
-    guild_id: int | None,
-) -> tuple[discord.Guild | None, str | None]:
-    """Return (guild, None) or (None, error_message)."""
-    if guild_id is not None:
-        guild = bot.get_guild(guild_id)
-        if guild is None:
-            return None, f"❌ Guild `{guild_id}` not found or bot is not a member."
-        return guild, None
-
-    if ctx_guild is None:
-        return None, "❌ Run this inside a server or supply a `guild_id`."
-
-    return ctx_guild, None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -320,263 +216,184 @@ async def _resolve_guild(
 # ──────────────────────────────────────────────────────────────────────────────
 
 class AdminCog(commands.Cog, name="Admin"):
-    """Bot-owner administration utilities."""
+    """Prefix-only admin utilities."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    # ── Owner check ──────────────────────────────────────────────────────────
+    # ── !roleadd @user <role name> ────────────────────────────────────────────
 
-    async def cog_check(self, ctx: commands.Context) -> bool:  # type: ignore[override]
-        """All prefix commands in this cog require bot ownership."""
-        return await self.bot.is_owner(ctx.author)
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # /role  (group)
-    # ──────────────────────────────────────────────────────────────────────────
-
-    @commands.hybrid_group(name="role", invoke_without_command=True)
-    async def role_group(self, ctx: commands.Context) -> None:
-        """Manage tracked roles. Use a subcommand: add, remove, list."""
-        if ctx.invoked_subcommand is None:
-            await self._role_list(ctx, None)
-
-    # role add ────────────────────────────────────────────────────────────────
-
-    @role_group.command(name="add")
-    @app_commands.describe(
-        role_name="Name of the role to start tracking",
-        guild_id="Target guild ID (defaults to current server)",
-    )
-    async def role_add(
+    @commands.command(name="roleadd")
+    @owner_or_permissions(manage_roles=True)
+    async def roleadd(
         self,
         ctx: commands.Context,
+        member: discord.Member,
+        *,
         role_name: str,
-        guild_id: Optional[int] = None,
     ) -> None:
-        """Start tracking a role."""
-        guild, err = await _resolve_guild(self.bot, ctx.guild, guild_id)
-        if err:
-            await ctx.send(err, ephemeral=True)
-            return
-
+        """Assign a role to a member.  Usage: !roleadd @user Role Name"""
         role = discord.utils.find(
-            lambda r: r.name.lower() == role_name.lower(),
-            guild.roles,
+            lambda r: r.name.lower() == role_name.lower(), ctx.guild.roles
         )
         if role is None:
-            await ctx.send(
-                f"❌ No role named **{role_name}** found in **{guild.name}**.",
-                ephemeral=True,
-            )
+            await ctx.send(f"❌ No role named **{role_name}** found.")
+            return
+        if role in member.roles:
+            await ctx.send(f"⚠️ {member.mention} already has **{role.name}**.")
+            return
+        if role >= ctx.guild.me.top_role:
+            await ctx.send("❌ That role is equal to or above my highest role — I can't assign it.")
             return
 
-        await db.add_tracked_role(guild.id, role.id)
-
+        await member.add_roles(role, reason=f"roleadd by {ctx.author}")
         embed = discord.Embed(
-            description=f"✅ Now tracking {role.mention} (`{role.id}`) in **{guild.name}**.",
+            description=f"✅ Added {role.mention} to {member.mention}.",
             color=discord.Color.green(),
         )
         await ctx.send(embed=embed)
 
-    # role remove ─────────────────────────────────────────────────────────────
+    @roleadd.error
+    async def roleadd_error(self, ctx: commands.Context, error: Exception) -> None:
+        if isinstance(error, commands.MissingRequiredArgument):
+            await ctx.send("❌ Usage: `!roleadd @user <role name>`")
+        elif isinstance(error, commands.MemberNotFound):
+            await ctx.send("❌ Member not found. Mention them or use their ID.")
+        elif isinstance(error, commands.MissingPermissions):
+            await ctx.send("❌ You need the **Manage Roles** permission.")
+        else:
+            raise error
 
-    @role_group.command(name="remove")
-    @app_commands.describe(
-        role_name="Name of the role to stop tracking",
-        guild_id="Target guild ID (defaults to current server)",
-    )
-    async def role_remove(
+    # ── !roleremove @user <role name> ─────────────────────────────────────────
+
+    @commands.command(name="roleremove")
+    @owner_or_permissions(manage_roles=True)
+    async def roleremove(
         self,
         ctx: commands.Context,
+        member: discord.Member,
+        *,
         role_name: str,
-        guild_id: Optional[int] = None,
     ) -> None:
-        """Stop tracking a role."""
-        guild, err = await _resolve_guild(self.bot, ctx.guild, guild_id)
-        if err:
-            await ctx.send(err, ephemeral=True)
-            return
-
+        """Remove a role from a member.  Usage: !roleremove @user Role Name"""
         role = discord.utils.find(
-            lambda r: r.name.lower() == role_name.lower(),
-            guild.roles,
+            lambda r: r.name.lower() == role_name.lower(), ctx.guild.roles
         )
         if role is None:
-            await ctx.send(
-                f"❌ No role named **{role_name}** found in **{guild.name}**.",
-                ephemeral=True,
-            )
+            await ctx.send(f"❌ No role named **{role_name}** found.")
+            return
+        if role not in member.roles:
+            await ctx.send(f"⚠️ {member.mention} doesn't have **{role.name}**.")
+            return
+        if role >= ctx.guild.me.top_role:
+            await ctx.send("❌ That role is equal to or above my highest role — I can't remove it.")
             return
 
-        await db.remove_tracked_role(guild.id, role.id)
-
+        await member.remove_roles(role, reason=f"roleremove by {ctx.author}")
         embed = discord.Embed(
-            description=f"🗑️ Stopped tracking {role.mention} (`{role.id}`) in **{guild.name}**.",
+            description=f"🗑️ Removed {role.mention} from {member.mention}.",
             color=discord.Color.orange(),
         )
         await ctx.send(embed=embed)
 
-    # role list ───────────────────────────────────────────────────────────────
+    @roleremove.error
+    async def roleremove_error(self, ctx: commands.Context, error: Exception) -> None:
+        if isinstance(error, commands.MissingRequiredArgument):
+            await ctx.send("❌ Usage: `!roleremove @user <role name>`")
+        elif isinstance(error, commands.MemberNotFound):
+            await ctx.send("❌ Member not found. Mention them or use their ID.")
+        elif isinstance(error, commands.MissingPermissions):
+            await ctx.send("❌ You need the **Manage Roles** permission.")
+        else:
+            raise error
 
-    @role_group.command(name="list")
-    @app_commands.describe(guild_id="Target guild ID (defaults to current server)")
-    async def role_list(
-        self,
-        ctx: commands.Context,
-        guild_id: Optional[int] = None,
-    ) -> None:
-        """List all tracked roles."""
-        await self._role_list(ctx, guild_id)
+    # ── !rolelist ─────────────────────────────────────────────────────────────
 
-    async def _role_list(
-        self,
-        ctx: commands.Context,
-        guild_id: int | None,
-    ) -> None:
-        guild, err = await _resolve_guild(self.bot, ctx.guild, guild_id)
-        if err:
-            await ctx.send(err, ephemeral=True)
-            return
-
-        tracked_ids: list[int] = await db.get_tracked_roles(guild.id)
-
-        embed = discord.Embed(
-            title=f"🏷️  Tracked Roles — {guild.name}",
-            color=discord.Color.blurple(),
+    @commands.command(name="rolelist")
+    async def rolelist(self, ctx: commands.Context) -> None:
+        """List every server role sorted by position, highest first."""
+        # Skip @everyone, sort descending by position
+        roles = sorted(
+            (r for r in ctx.guild.roles if r.name != "@everyone"),
+            key=lambda r: r.position,
+            reverse=True,
         )
 
-        if not tracked_ids:
-            embed.description = "*No roles are currently being tracked.*"
+        if not roles:
+            await ctx.send("No roles found (besides @everyone).")
+            return
+
+        lines = []
+        for i, role in enumerate(roles, start=1):
+            member_count = len(role.members)
+            lines.append(f"`{i:>2}.` {role.mention}  ─  `{member_count}` member{'s' if member_count != 1 else ''}")
+
+        # Split into pages of 20 if the server has many roles
+        page_size = 20
+        pages = [lines[i:i + page_size] for i in range(0, len(lines), page_size)]
+
+        for page_num, page in enumerate(pages, start=1):
+            embed = discord.Embed(
+                title=f"🏷️  Role List — {ctx.guild.name}"
+                      + (f"  (page {page_num}/{len(pages)})" if len(pages) > 1 else ""),
+                description="\n".join(page),
+                color=discord.Color.blurple(),
+            )
+            embed.set_footer(text=f"{len(roles)} roles total  •  sorted highest → lowest")
+            await ctx.send(embed=embed)
+
+    # ── !userinfo <@user or id> ───────────────────────────────────────────────
+
+    @commands.command(name="userinfo")
+    async def userinfo(
+        self,
+        ctx: commands.Context,
+        *,
+        target: str,
+    ) -> None:
+        """Show detailed info about a user.  Usage: !userinfo @user  or  !userinfo 123456789"""
+        # Try to resolve as a Member (handles mention, name#discrim, plain ID)
+        member: discord.Member | None = None
+
+        # Strip <@> mention formatting if present
+        raw = target.strip().lstrip("<@").rstrip(">").lstrip("!")
+
+        if raw.isdigit():
+            member = ctx.guild.get_member(int(raw))
+            if member is None:
+                # Try fetching — may not be cached
+                try:
+                    member = await ctx.guild.fetch_member(int(raw))
+                except discord.NotFound:
+                    pass
+
+        # Fallback: search by name
+        if member is None:
+            member = discord.utils.find(
+                lambda m: m.name.lower() == target.lower()
+                or m.display_name.lower() == target.lower(),
+                ctx.guild.members,
+            )
+
+        if member is None:
+            await ctx.send("❌ Member not found in this server.")
+            return
+
+        await ctx.send(embed=_build_user_embed(member))
+
+    @userinfo.error
+    async def userinfo_error(self, ctx: commands.Context, error: Exception) -> None:
+        if isinstance(error, commands.MissingRequiredArgument):
+            await ctx.send("❌ Usage: `!userinfo @user`  or  `!userinfo <user_id>`")
         else:
-            lines: list[str] = []
-            for role_id in tracked_ids:
-                role = guild.get_role(role_id)
-                lines.append(
-                    f"• {role.mention}  `{role_id}`"
-                    if role
-                    else f"• ~~Unknown role~~  `{role_id}`"
-                )
-            embed.description = "\n".join(lines)
-            embed.set_footer(text=f"{len(tracked_ids)} tracked role(s)")
+            raise error
 
-        await ctx.send(embed=embed)
+    # ── !serverinfo ───────────────────────────────────────────────────────────
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # /admin  (group)
-    # ──────────────────────────────────────────────────────────────────────────
-
-    @commands.hybrid_group(name="admin")
-    async def admin_group(self, ctx: commands.Context) -> None:
-        """Admin utilities group."""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
-
-    # ── /admin info  (sub-group) ──────────────────────────────────────────────
-
-    @admin_group.group(name="info")
-    async def info_group(self, ctx: commands.Context) -> None:
-        """Show info about a server or user."""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
-
-    # admin info server ───────────────────────────────────────────────────────
-
-    @info_group.command(name="server")
-    @app_commands.describe(guild_id="Target guild ID (defaults to current server)")
-    async def info_server(
-        self,
-        ctx: commands.Context,
-        guild_id: Optional[int] = None,
-    ) -> None:
-        """Display a detailed server overview."""
-        guild, err = await _resolve_guild(self.bot, ctx.guild, guild_id)
-        if err:
-            await ctx.send(err, ephemeral=True)
-            return
-
-        await ctx.send(embed=_build_server_embed(guild))
-
-    # admin info user ─────────────────────────────────────────────────────────
-
-    @info_group.command(name="user")
-    @app_commands.describe(
-        user="The user to look up",
-        guild_id="Target guild ID (defaults to current server)",
-    )
-    async def info_user(
-        self,
-        ctx: commands.Context,
-        user: discord.User,
-        guild_id: Optional[int] = None,
-    ) -> None:
-        """Display a detailed user overview."""
-        guild, err = await _resolve_guild(self.bot, ctx.guild, guild_id)
-        if err:
-            await ctx.send(err, ephemeral=True)
-            return
-
-        member: discord.Member | None = guild.get_member(user.id)
-        await ctx.send(embed=_build_user_embed(user, member))
-
-    # ── admin channels ────────────────────────────────────────────────────────
-
-    @admin_group.command(name="channels")
-    @app_commands.describe(guild_id="Target guild ID (defaults to current server)")
-    async def admin_channels(
-        self,
-        ctx: commands.Context,
-        guild_id: Optional[int] = None,
-    ) -> None:
-        """Show a full channel breakdown, grouped by category."""
-        guild, err = await _resolve_guild(self.bot, ctx.guild, guild_id)
-        if err:
-            await ctx.send(err, ephemeral=True)
-            return
-
-        await ctx.send(embed=_build_channels_embed(guild))
-
-    # ── admin ping ────────────────────────────────────────────────────────────
-
-    @admin_group.command(name="ping")
-    async def admin_ping(self, ctx: commands.Context) -> None:
-        """Show the bot's WebSocket and REST latency."""
-        ws_latency = round(self.bot.latency * 1000)
-
-        # Measure REST round-trip
-        before = discord.utils.utcnow()
-        msg = await ctx.send("📡 Pinging…")
-        rest_latency = round((discord.utils.utcnow() - before).total_seconds() * 1000)
-
-        colour = (
-            discord.Color.green() if ws_latency < 100
-            else discord.Color.orange() if ws_latency < 250
-            else discord.Color.red()
-        )
-
-        embed = discord.Embed(title="🏓 Pong!", color=colour)
-        embed.add_field(name="WebSocket", value=f"`{ws_latency} ms`", inline=True)
-        embed.add_field(name="REST", value=f"`{rest_latency} ms`", inline=True)
-        await msg.edit(content=None, embed=embed)
-
-    # ── admin reload ──────────────────────────────────────────────────────────
-
-    @admin_group.command(name="reload")
-    @commands.is_owner()
-    @app_commands.describe(cog="Dotted path to the cog extension (e.g. cogs.admin_cog)")
-    async def admin_reload(self, ctx: commands.Context, cog: str) -> None:
-        """Reload a cog extension. (Owner only)"""
-        try:
-            await self.bot.reload_extension(cog)
-        except commands.ExtensionNotLoaded:
-            await ctx.send(f"❌ Extension `{cog}` is not loaded.", ephemeral=True)
-        except commands.ExtensionNotFound:
-            await ctx.send(f"❌ Extension `{cog}` not found.", ephemeral=True)
-        except Exception as exc:
-            log.exception("Failed to reload %s", cog)
-            await ctx.send(f"❌ Reload failed:\n```\n{exc}\n```", ephemeral=True)
-        else:
-            await ctx.send(f"♻️ Reloaded `{cog}` successfully.", ephemeral=True)
+    @commands.command(name="serverinfo")
+    async def serverinfo(self, ctx: commands.Context) -> None:
+        """Display a detailed overview of this server."""
+        await ctx.send(embed=_build_server_embed(ctx.guild))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
