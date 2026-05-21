@@ -335,15 +335,11 @@ class AdminCog(commands.Cog, name="Admin"):
     # /role  (group)
     # ──────────────────────────────────────────────────────────────────────────
 
-    @commands.hybrid_group(name="role", fallback="list")
-    @app_commands.describe(guild_id="Target guild ID (defaults to current server)")
-    async def role_group(
-        self,
-        ctx: commands.Context,
-        guild_id: Optional[int] = None,
-    ) -> None:
-        """Manage tracked roles.  Defaults to listing them."""
-        await self._role_list(ctx, guild_id)
+    @commands.hybrid_group(name="role", invoke_without_command=True)
+    async def role_group(self, ctx: commands.Context) -> None:
+        """Manage tracked roles. Use a subcommand: add, remove, list."""
+        if ctx.invoked_subcommand is None:
+            await self._role_list(ctx, None)
 
     # role add ────────────────────────────────────────────────────────────────
 
