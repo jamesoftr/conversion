@@ -6,7 +6,10 @@ a!help tracker          — Jump straight to Tracker
 a!help leaderboard      — Jump straight to Leaderboard
 a!help category         — Jump straight to Category Stats
 a!help autopause        — Jump straight to Autopause
-a!help converter        — Jump straight to Converter  (convert + convertch)
+a!help converter        — Jump straight to Converter
+a!help loans            — Jump straight to Loans
+a!help quiz             — Jump straight to Element Quiz
+a!help calc             — Jump straight to Calculator
 
 Navigation
 ──────────
@@ -31,16 +34,17 @@ from discord.ext import commands
 
 SECTIONS = [
     {
-        "key":    "tracker",
-        "title":  "📋 Tracker",
-        "emoji":  "📋",
-        "color":  discord.Color.gold(),
+        "key":     "tracker",
+        "title":   "📋 Tracker",
+        "emoji":   "📋",
+        "color":   discord.Color.gold(),
         "summary": "Catch & flee tracking, user profiles, fled-log routing.",
         "fields": [
             (
                 "`a!profile` / `a!pf`  `[@user]`",
                 "View your catch stats (today + all-time), type breakdown, region "
-                "breakdown, and full Pokémon list. Mention a user to see theirs.",
+                "breakdown, and full Pokémon list. Mention a user to see theirs.\n"
+                "Profile buttons: **🔬 Type Stats**, **🗺️ Region Stats**, **📋 Pokémon Caught** (paginated).",
             ),
             (
                 "`a!check`  *(Admin)*",
@@ -64,10 +68,10 @@ SECTIONS = [
         ],
     },
     {
-        "key":    "leaderboard",
-        "title":  "🏆 Leaderboard",
-        "emoji":  "🏆",
-        "color":  discord.Color.blurple(),
+        "key":     "leaderboard",
+        "title":   "🏆 Leaderboard",
+        "emoji":   "🏆",
+        "color":   discord.Color.blurple(),
         "summary": "Global and category catch leaderboards with time-window toggles.",
         "fields": [
             (
@@ -83,10 +87,10 @@ SECTIONS = [
         ],
     },
     {
-        "key":    "category",
-        "title":  "📊 Category Stats",
-        "emoji":  "📊",
-        "color":  discord.Color.teal(),
+        "key":     "category",
+        "title":   "📊 Category Stats",
+        "emoji":   "📊",
+        "color":   discord.Color.teal(),
         "summary": "Per-category spawn, catch, and flee statistics.",
         "fields": [
             (
@@ -98,10 +102,10 @@ SECTIONS = [
         ],
     },
     {
-        "key":    "autopause",
-        "title":  "🔒 Autopause",
-        "emoji":  "🔒",
-        "color":  discord.Color.red(),
+        "key":     "autopause",
+        "title":   "🔒 Autopause",
+        "emoji":   "🔒",
+        "color":   discord.Color.red(),
         "summary": "Auto-lock channels on rare/regional spawns, with reminders and manual unlock.",
         "fields": [
             (
@@ -153,10 +157,10 @@ SECTIONS = [
         ],
     },
     {
-        "key":    "converter",
-        "title":  "🔄 Converter",
-        "emoji":  "🔄",
-        "color":  discord.Color.og_blurple(),
+        "key":     "converter",
+        "title":   "🔄 Converter",
+        "emoji":   "🔄",
+        "color":   discord.Color.og_blurple(),
         "summary": "Convert Components V2 messages into classic embeds.",
         "fields": [
             (
@@ -191,10 +195,150 @@ SECTIONS = [
             ),
         ],
     },
+    {
+        "key":     "loans",
+        "title":   "💰 Loans",
+        "emoji":   "💰",
+        "color":   discord.Color.green(),
+        "summary": "PokéCoin / PC loan tracker with interest, repayments, and overdue alerts.",
+        "fields": [
+            (
+                "`a!loan give @user <amount> [pc|pokecoins]`",
+                "Issue a new loan to a user. Optional flags:\n"
+                "`--rate <n>` — interest rate (percent)  •  `--type flat|compound` — interest type\n"
+                "`--due YYYY-MM-DD` — due date  •  `--proof <url>` — proof link\n"
+                "`--note \"text\"` — attach a note\n"
+                "e.g. `a!loan give @ash 500 pc --rate 5 --type compound --due 2025-12-31`",
+            ),
+            (
+                "`a!loan pay <LOAN-ID> <amount>`",
+                "Record a (partial or full) repayment on a loan.\n"
+                "Optional: `--note \"text\"` to attach a payment note.",
+            ),
+            (
+                "`a!loan cancel <LOAN-ID>`",
+                "Cancel a loan (lender only). Marks it as cancelled without requiring full repayment.",
+            ),
+            (
+                "`a!loan info <LOAN-ID>`",
+                "View full loan details: amount, interest, due date, repayment history, "
+                "outstanding balance, and overdue status.",
+            ),
+            (
+                "`a!loan proof <LOAN-ID> <url>`",
+                "Attach or update the proof URL on an existing loan.",
+            ),
+            (
+                "`a!loan list [lent|borrowed|all]`",
+                "Your personal loan dashboard — active loans by default. "
+                "Pass `lent`, `borrowed`, or `all` to filter.",
+            ),
+            (
+                "`a!loan server [active|paid|all]`  *(Admin)*",
+                "Server-wide loan list. Defaults to active loans.",
+            ),
+            (
+                "`a!loan summary [@user]`",
+                "Quick summary of total lent, borrowed, and outstanding amounts. "
+                "Mention a user to see their summary.",
+            ),
+        ],
+    },
+    {
+        "key":     "quiz",
+        "title":   "🧪 Element Quiz",
+        "emoji":   "🧪",
+        "color":   discord.Color.purple(),
+        "summary": "Periodic table element quiz — auto-spawning or manual incense mode.",
+        "fields": [
+            (
+                "**Quiz types** *(chosen randomly)*",
+                "**NAME** — masked element name shown; type the answer in chat.\n"
+                "**SYMBOL** — element symbol shown; pick from 4 buttons.\n"
+                "**ATOMIC** — atomic number shown; pick from 4 buttons.\n"
+                "All types show a generated element card image.",
+            ),
+            (
+                "`a!quiz trigger`  *(Admin)*",
+                "Manually fire a quiz immediately in the current (or locked) channel.",
+            ),
+            (
+                "`a!quiz skip`  *(Admin)*",
+                "Skip the currently active quiz without awarding points.",
+            ),
+            (
+                "`a!quiz hint`  *(Admin)*",
+                "Reveal the first letter + length of the answer for an active **NAME** quiz.",
+            ),
+            (
+                "`a!quiz status`  *(Admin)*",
+                "Show the running quiz counter and current active quiz info.",
+            ),
+            (
+                "`a!quiz setchannel [#channel]`  *(Admin)*",
+                "Lock quizzes to a specific channel. Omit the channel to use the current one.",
+            ),
+            (
+                "`a!quiz clearchannel`  *(Admin)*",
+                "Remove the channel lock — quizzes can fire in any channel again.",
+            ),
+            (
+                "`a!quiz scores`  *(Admin)*",
+                "Show the server quiz leaderboard (total correct answers).",
+            ),
+            (
+                "`a!quiz incense start`  *(Admin)*",
+                "Start a **manual incense** session: fires a fixed number of spawns "
+                "at set intervals (configured in bot settings).",
+            ),
+            (
+                "`a!quiz incense stop`  *(Admin)*",
+                "Stop a running manual incense session early.",
+            ),
+        ],
+    },
+    {
+        "key":     "calc",
+        "title":   "🧮 Calculator",
+        "emoji":   "🧮",
+        "color":   discord.Color.from_rgb(30, 30, 35),
+        "summary": "Interactive button calculator or instant expression evaluator.",
+        "fields": [
+            (
+                "`a!calc`  *(also: `a!calculator`)*",
+                "Open an **interactive button calculator** in chat. "
+                "Supports `+  −  ×  ÷  %  ±` and decimal input.\n"
+                "**CE** deletes the last entry  •  **C** resets  •  times out after 5 minutes.",
+            ),
+            (
+                "`a!calc <expression>`  *(also: `a!math`)*",
+                "Instantly evaluate a math expression and print the result.\n"
+                "Supports `+ - * / % ( )`.\n"
+                "e.g. `a!calc (10 + 5) * 3`  →  `(10 + 5) * 3 = **45**`",
+            ),
+        ],
+    },
 ]
 
-# Flat key → index+1 map for direct jumping
+# Flat key → page-index map for direct jumping
 _KEY_TO_PAGE: dict[str, int] = {s["key"]: i + 1 for i, s in enumerate(SECTIONS)}
+
+# Extra aliases that map to existing keys
+_ALIASES: dict[str, str] = {
+    "lb":          "leaderboard",
+    "leaderboards": "leaderboard",
+    "cs":          "category",
+    "catstat":     "category",
+    "ap":          "autopause",
+    "convert":     "converter",
+    "loan":        "loans",
+    "element":     "quiz",
+    "elements":    "quiz",
+    "calculator":  "calc",
+    "math":        "calc",
+    "pf":          "tracker",
+    "profile":     "tracker",
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -244,8 +388,8 @@ def _section_embed(sec: dict, page_num: int) -> discord.Embed:
 
 class HelpView(discord.ui.View):
     """
-    page == 0           →  overview
-    page == 1..N        →  SECTIONS[page-1]
+    page == 0      →  overview
+    page == 1..N   →  SECTIONS[page-1]
     """
 
     def __init__(self, page: int = 0):
@@ -259,7 +403,7 @@ class HelpView(discord.ui.View):
         self.clear_items()
 
         if self.page == 0:
-            # Overview: one button per section (row 0 and 1, up to 5 per row)
+            # Overview: one button per section, up to 5 per row
             for i, sec in enumerate(SECTIONS):
                 btn = discord.ui.Button(
                     label=sec["title"],
@@ -268,7 +412,6 @@ class HelpView(discord.ui.View):
                     row=i // 5,
                     custom_id=f"help_sec_{i}",
                 )
-                # Capture i in closure
                 btn.callback = self._make_section_callback(i + 1)
                 self.add_item(btn)
         else:
@@ -362,17 +505,23 @@ class HelpCog(commands.Cog):
         a!help leaderboard      — Leaderboard commands
         a!help category         — Category Stats commands
         a!help autopause        — Autopause commands
-        a!help converter        — Converter commands (convert + convertch channel restrictions)
+        a!help converter        — Converter commands
+        a!help loans            — Loan tracker commands
+        a!help quiz             — Element Quiz commands
+        a!help calc             — Calculator commands
         """
         start_page = 0
 
         if section:
             key = section.strip().lower()
 
-            # Exact key match first
+            # Resolve alias first
+            key = _ALIASES.get(key, key)
+
+            # Exact key match
             page = _KEY_TO_PAGE.get(key)
 
-            # Fuzzy: check if the query appears in any key or title
+            # Fuzzy: check if the query appears in any key or title word
             if page is None:
                 match = next(
                     (s for s in SECTIONS
@@ -393,7 +542,7 @@ class HelpCog(commands.Cog):
             start_page = page
 
         view = HelpView(page=start_page)
-        await ctx.reply(embed=view.current_embed(), view=view)
+        await ctx.reply(embed=view.current_embed(), view=view, mention_author=False)
 
 
 async def setup(bot: commands.Bot):
