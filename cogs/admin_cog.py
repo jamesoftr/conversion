@@ -120,8 +120,14 @@ def _server_info_embed(guild: discord.Guild) -> discord.Embed:
     return embed
 
 
-def _user_info_embed(user: discord.User, guild: discord.Guild = None) -> discord.Embed:
-    """Full user information embed."""
+def _user_info_embed(user: discord.User, member: discord.Member = None) -> discord.Embed:
+    """Full user information embed.
+    
+    Args:
+        user:   The Discord user object.
+        member: Optional guild member object (pre-fetched by the caller).
+                If provided, join date, roles, and permissions are included.
+    """
     embed = discord.Embed(
         title=f"👤 User Info — {user.display_name}",
         color=discord.Color.purple(),
@@ -136,30 +142,28 @@ def _user_info_embed(user: discord.User, guild: discord.Guild = None) -> discord
     embed.add_field(name="Account Created", value=_format_datetime(user.created_at), inline=True)
     embed.add_field(name="Account Age", value=_duration_since(user.created_at), inline=True)
     
-    # If member context is available
-    if guild:
-        try:
-            member = await guild.fetch_member(user.id)
-            embed.add_field(name="Joined Server", value=_format_datetime(member.joined_at), inline=True)
-            embed.add_field(name="Member Since", value=_duration_since(member.joined_at), inline=True)
-            
-            # Roles (excluding @everyone)
-            roles = [r.mention for r in member.roles if r != guild.default_role]
-            if roles:
-                roles_str = ", ".join(roles[:10])
-                if len(roles) > 10:
-                    roles_str += f" +{len(roles) - 10} more"
-                embed.add_field(name="Roles", value=roles_str, inline=False)
-            
-            # Permissions (top 5)
-            perms = [p for p, v in member.guild_permissions if v]
-            if perms:
-                perms_str = ", ".join([f"`{p}`" for p in perms[:5]])
-                if len(perms) > 5:
-                    perms_str += f" +{len(perms) - 5} more"
-                embed.add_field(name="Key Permissions", value=perms_str, inline=False)
-        except discord.NotFound:
-            embed.add_field(name="Guild Member", value="❌ Not in this guild", inline=False)
+    # If member context is available (fetched asynchronously by the caller)
+    if member:
+        embed.add_field(name="Joined Server", value=_format_datetime(member.joined_at), inline=True)
+        embed.add_field(name="Member Since", value=_duration_since(member.joined_at), inline=True)
+        
+        # Roles (excluding @everyone)
+        roles = [r.mention for r in member.roles if r != member.guild.default_role]
+        if roles:
+            roles_str = ", ".join(roles[:10])
+            if len(roles) > 10:
+                roles_str += f" +{len(roles) - 10} more"
+            embed.add_field(name="Roles", value=roles_str, inline=False)
+        
+        # Permissions (top 5)
+        perms = [p for p, v in member.guild_permissions if v]
+        if perms:
+            perms_str = ", ".join([f"`{p}`" for p in perms[:5]])
+            if len(perms) > 5:
+                perms_str += f" +{len(perms) - 5} more"
+            embed.add_field(name="Key Permissions", value=perms_str, inline=False)
+    else:
+        embed.add_field(name="Guild Member", value="❌ Not in this guild", inline=False)
     
     embed.set_footer(text=f"User ID: {user.id}")
     return embed
@@ -406,7 +410,7 @@ class AdminCog(commands.Cog):
             except discord.NotFound:
                 pass
 
-        embed = _user_info_embed(user, ctx.guild)
+        embed = _user_info_embed(user, member)
         await ctx.reply(embed=embed, mention_author=False)
 
     # ── /admin channels ──────────────────────────────────────────────────────
