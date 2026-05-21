@@ -59,7 +59,7 @@ INCENSE_MANUAL_SPAWNS  = 30     # number of spawns for a!quiz incense start
 INCENSE_AUTO_INTERVAL  = 30     # seconds between spawns for auto-startup incense
 
 # Set to a channel ID to auto-start infinite incense on startup, or None to disable.
-INCENSE_AUTO_CHANNEL_ID: int | None = None  # e.g. 1506869977636933743
+INCENSE_AUTO_CHANNEL_ID: int | None = 1506869977636933743  # e.g. 1506869977636933743
 
 # Font paths (Liberation Sans ships on most Linux systems)
 _FONT_BOLD = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
