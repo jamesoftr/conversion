@@ -52,6 +52,9 @@ QUIZ_TIMEOUT_SECONDS = 120   # seconds before the quiz auto-expires with no winn
 LEADERBOARD_SIZE     = 10   # max entries shown in the scores embed
 INCENSE_INTERVAL     = 20   # seconds between incense quiz spawns
 
+# Set to a channel ID to auto-start incense on bot startup, or None to disable.
+INCENSE_AUTO_CHANNEL_ID: int | None = 1506869977636933743  # e.g. 123456789012345678
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Pure helpers
@@ -220,7 +223,39 @@ class ElementQuizCog(commands.Cog):
             (e["name"].lower() for e in ELEMENTS), key=len, reverse=True
         )
 
-    # ── Internal helpers ──────────────────────────────────────────────────────
+    # ── Startup ───────────────────────────────────────────────────────────────
+
+    async def cog_load(self) -> None:
+        """Called by discord.py after the cog is added to the bot.
+        Waits until the bot is fully ready, then auto-starts incense if
+        INCENSE_AUTO_CHANNEL_ID is set and incense isn't already running there.
+        """
+        if not INCENSE_AUTO_CHANNEL_ID:
+            return
+
+        async def _auto_start():
+            await self.bot.wait_until_ready()
+            channel = self.bot.get_channel(INCENSE_AUTO_CHANNEL_ID)
+            if channel is None:
+                try:
+                    channel = await self.bot.fetch_channel(INCENSE_AUTO_CHANNEL_ID)
+                except discord.HTTPException:
+                    print(f"[ElementQuiz] Auto-incense: could not find channel {INCENSE_AUTO_CHANNEL_ID}")
+                    return
+
+            if channel.id in self._incense_tasks:
+                return  # already running (shouldn't happen on a fresh startup)
+
+            scope_key = channel.guild.id if hasattr(channel, "guild") and channel.guild else f"dm_{INCENSE_AUTO_CHANNEL_ID}"
+            task = asyncio.get_event_loop().create_task(
+                self._incense_loop(channel, scope_key)
+            )
+            self._incense_tasks[channel.id] = task
+            print(f"[ElementQuiz] Auto-incense started in #{channel.name} ({channel.id})")
+
+        asyncio.get_event_loop().create_task(_auto_start())
+
+        # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _scope_key(self, message: discord.Message) -> int | str:
         """Return a unique state key for the message's scope."""
