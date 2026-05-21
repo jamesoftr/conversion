@@ -56,6 +56,9 @@ WRONG_COOLDOWN       = 5    # seconds a user must wait after a wrong button clic
 
 # Set to a channel ID to auto-start incense on bot startup, or None to disable.
 INCENSE_AUTO_CHANNEL_ID: int | None = None  # e.g. 123456789012345678
+# Interval (seconds) used specifically for the auto-startup incense session.
+# The normal a!quiz incense command still uses INCENSE_INTERVAL.
+INCENSE_AUTO_INTERVAL    = 30
 
 
 class QuizType(Enum):
@@ -385,7 +388,7 @@ class ElementQuizCog(commands.Cog):
                 return
             scope_key = channel.guild.id if hasattr(channel, "guild") and channel.guild else f"dm_{INCENSE_AUTO_CHANNEL_ID}"
             task = asyncio.get_event_loop().create_task(
-                self._incense_loop(channel, scope_key)
+                self._incense_loop(channel, scope_key, interval=INCENSE_AUTO_INTERVAL)
             )
             self._incense_tasks[channel.id] = task
             print(f"[ElementQuiz] Auto-incense started in #{channel.name} ({channel.id})")
@@ -557,8 +560,9 @@ class ElementQuizCog(commands.Cog):
         self,
         channel: discord.TextChannel,
         scope_key: int | str,
+        interval: int = INCENSE_INTERVAL,
     ) -> None:
-        """Spawn a random quiz type every INCENSE_INTERVAL seconds until stopped."""
+        """Spawn a random quiz type every `interval` seconds until stopped."""
         try:
             while channel.id in self._incense_tasks:
                 element    = random.choice(ELEMENTS)
@@ -573,7 +577,7 @@ class ElementQuizCog(commands.Cog):
                 if quiz_type == QuizType.NAME:
                     self._incense_active[channel.id] = element
                     await channel.send(embed=embed)
-                    await asyncio.sleep(INCENSE_INTERVAL)
+                    await asyncio.sleep(interval)
 
                     if channel.id in self._incense_active:
                         answered = self._incense_active.pop(channel.id, None)
@@ -614,7 +618,7 @@ class ElementQuizCog(commands.Cog):
                     )
                     await channel.send(embed=embed, view=view)
                     # Wait until answered or timed out before next round
-                    await asyncio.wait_for(answered.wait(), timeout=INCENSE_INTERVAL + 5)
+                    await asyncio.wait_for(answered.wait(), timeout=interval + 5)
 
         except (asyncio.CancelledError, asyncio.TimeoutError):
             self._incense_active.pop(channel.id, None)
