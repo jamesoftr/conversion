@@ -75,7 +75,7 @@ INCENSE_MANUAL_SPAWNS  = 30      # number of spawns for a!quiz incense start
 INCENSE_AUTO_INTERVAL  = 20      # seconds between spawns for auto-startup incense
 
 # Set to a channel ID to auto-start infinite incense on startup, or None to disable.
-INCENSE_AUTO_CHANNEL_ID: Optional[int] = 1506869977636933743
+INCENSE_AUTO_CHANNEL_ID: Optional[int] = 1507053812324761640
 
 
 # ─────────────────────────────────────────────────────────────────────────────
