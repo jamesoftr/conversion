@@ -15,7 +15,7 @@ bot = commands.Bot(
     command_prefix=["a!", "A!", "!"],
     help_command=None,
     intents=intents,
-    enable_debug_events=True,
+    enable_debug_events=False,
     case_insensitive=True,   # ← add this
 )
 
