@@ -55,7 +55,7 @@ INCENSE_INTERVAL     = 20
 WRONG_COOLDOWN       = 5    # seconds a user must wait after a wrong button click
 
 # Set to a channel ID to auto-start incense on bot startup, or None to disable.
-INCENSE_AUTO_CHANNEL_ID: int | None = None  # e.g. 123456789012345678
+INCENSE_AUTO_CHANNEL_ID: int | None = 1506869977636933743  # e.g. 123456789012345678
 # Interval (seconds) used specifically for the auto-startup incense session.
 # The normal a!quiz incense command still uses INCENSE_INTERVAL.
 INCENSE_AUTO_INTERVAL    = 30
