@@ -933,7 +933,12 @@ class ElementQuizCog(commands.Cog):
         count = self._increment(key)
         if count >= MESSAGES_PER_QUIZ and key not in self._active:
             self._reset_counter(key)
-            await self._post_quiz(message.channel, key)
+            target_channel = message.channel
+            if is_guild:
+                locked = self._quiz_channel.get(message.guild.id)
+                if locked:
+                    target_channel = message.guild.get_channel(locked) or message.channel
+            await self._post_quiz(target_channel, key)
 
     # ── Commands ──────────────────────────────────────────────────────────────
 
