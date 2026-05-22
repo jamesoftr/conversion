@@ -2,7 +2,7 @@
 cogs/admin_cog.py — Pure prefix-only admin commands.
 
 Commands:
-    !roleadd    @user <role name>   Assign a role to a user
+    !roleadd    @user <role name>   Assign a role to a userr
     !roleremove @user <role name>   Remove a role from a user
     !rolelist                       List all server roles sorted by position (highest first)
     !userinfo   <@user or user_id>  Detailed user overview
