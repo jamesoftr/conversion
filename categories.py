@@ -89,7 +89,7 @@ CATEGORIES: list[dict] = [
         "key": "event",
         "aliases": ["ep", "ev", "emons"],
         "pokemon": {
-            "Cicada Vikavolt","Swarming Ledyba",
+            "Pokopia Ditto","Swarming Ledyba",
         },
     },
 ]
