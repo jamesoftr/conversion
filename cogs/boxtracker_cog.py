@@ -17,6 +17,7 @@ Tracked per opening
   • low_iv                — list of {name, iv}   (iv <= 10)
   • total_coins           — sum of all Pokécoin rewards
   • total_shards          — sum of all Shard rewards
+  • total_redeems         — sum of all Redeem rewards
 
 Commands
 ────────
@@ -68,8 +69,9 @@ POKEMON_LINE_RE = re.compile(
     r"\*\*",                          # bold close
     re.IGNORECASE,
 )
-COIN_LINE_RE  = re.compile(r"([\d,]+)\s+Pokécoins", re.IGNORECASE)
-SHARD_LINE_RE = re.compile(r"(\d+)\s+Shards?",       re.IGNORECASE)
+COIN_LINE_RE   = re.compile(r"([\d,]+)\s+Pokécoins", re.IGNORECASE)
+SHARD_LINE_RE  = re.compile(r"(\d+)\s+Shards?",       re.IGNORECASE)
+REDEEM_LINE_RE = re.compile(r"(\d+)\s+Redeem",        re.IGNORECASE)
 
 HIGH_IV_THRESHOLD = 90.0
 LOW_IV_THRESHOLD  = 10.0
@@ -156,8 +158,9 @@ def _parse_box_embed(embed: discord.Embed) -> Optional[dict]:
     shinies:  list[dict] = []
     high_iv:  list[dict] = []
     low_iv:   list[dict] = []
-    total_coins  = 0
-    total_shards = 0
+    total_coins   = 0
+    total_shards  = 0
+    total_redeems = 0
 
     for line in description.splitlines():
         line = line.strip()
@@ -184,6 +187,11 @@ def _parse_box_embed(embed: discord.Embed) -> Optional[dict]:
         sm = SHARD_LINE_RE.search(line)
         if sm:
             total_shards += int(sm.group(1))
+            continue
+
+        rm = REDEEM_LINE_RE.search(line)
+        if rm:
+            total_redeems += int(rm.group(1))
 
     return {
         "boxes_opened":  boxes_opened,
@@ -193,6 +201,7 @@ def _parse_box_embed(embed: discord.Embed) -> Optional[dict]:
         "low_iv":        low_iv,
         "total_coins":   total_coins,
         "total_shards":  total_shards,
+        "total_redeems": total_redeems,
     }
 
 
@@ -236,6 +245,7 @@ def _build_stats_pages(
     total_low     = sum(len(d["low_iv"])   for d in days)
     total_coins   = sum(d["total_coins"]   for d in days)
     total_shards  = sum(d["total_shards"]  for d in days)
+    total_redeems = sum(d.get("total_redeems", 0) for d in days)
     shiny_rate    = (
         f"1 / {total_pokemon // total_shinies}" if total_shinies else "—"
     )
@@ -257,7 +267,8 @@ def _build_stats_pages(
         f"- 🔺  **High IV ≥90%** — `{total_high}`\n"
         f"- 🔻  **Low IV ≤10%** — `{total_low}`\n"
         f"- 🪙  **Coins** — `{total_coins:,}`\n"
-        f"- 💎  **Shards** — `{total_shards}`"
+        f"- 💎  **Shards** — `{total_shards}`\n"
+        f"- 🎟️  **Redeems** — `{total_redeems}`"
     )
     pages.append(summary)
 
@@ -286,6 +297,7 @@ def _build_stats_pages(
             f"- 🎴  **Pokémon** — `{day['total_pokemon']}`\n"
             f"- 🪙  **Coins** — `{day['total_coins']:,}`\n"
             f"- 💎  **Shards** — `{day['total_shards']}`\n"
+            f"- 🎟️  **Redeems** — `{day.get('total_redeems', 0)}`\n"
             f"> shiny rate  `{day_shiny_rate}`\n"
             + (
                 f"\n**Notable pulls**\n{notable_block}"
@@ -372,6 +384,10 @@ class BoxTrackerCog(commands.Cog):
         if reward_data is None:
             return None
 
+        # Dedup — skip if this exact embed message was already recorded
+        if not await db.mark_box_message_seen(message.id):
+            return None
+
         # Resolve who opened the box
         user_id = await _resolve_opener_id(message)
         if user_id is None:
@@ -389,6 +405,7 @@ class BoxTrackerCog(commands.Cog):
             low_iv        = reward_data["low_iv"],
             total_coins   = reward_data["total_coins"],
             total_shards  = reward_data["total_shards"],
+            total_redeems = reward_data["total_redeems"],
             date_override = record_date,
         )
 
@@ -486,7 +503,8 @@ class BoxTrackerCog(commands.Cog):
             f"- 📦  **Boxes** — `{data['boxes_opened']}`\n"
             f"- 🎴  **Pokémon** — `{data['total_pokemon']}`\n"
             f"- 🪙  **Coins** — `{data['total_coins']:,}`\n"
-            f"- 💎  **Shards** — `{data['total_shards']}`"
+            f"- 💎  **Shards** — `{data['total_shards']}`\n"
+            f"- 🎟️  **Redeems** — `{data['total_redeems']}`"
             + (
                 f"\n\n**Notable pulls**\n{notable_block}"
                 if notable_block else ""
