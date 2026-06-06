@@ -372,6 +372,7 @@ class BoxTrackerCog(commands.Cog):
           2. Embed author icon URL   (fallback; fails for default-avatar users)
 
         Returns the full data dict (including resolved user_id) on success,
+        "duplicate" if the message was already recorded,
         or None if the message isn't a box opening or the opener can't be found.
         """
         # Only act on box-opening embeds
@@ -386,7 +387,7 @@ class BoxTrackerCog(commands.Cog):
 
         # Dedup — skip if this exact embed message was already recorded
         if not await db.mark_box_message_seen(message.id):
-            return None
+            return "duplicate"
 
         # Resolve who opened the box
         user_id = await _resolve_opener_id(message)
@@ -480,6 +481,13 @@ class BoxTrackerCog(commands.Cog):
         # Pass the original message's date so historical adds land on the right day
         original_date = target.created_at.date()
         data = await self._process_box_message(target, date_override=original_date)
+
+        if data == "duplicate":
+            await ctx.reply(
+                "⚠️ That box opening has already been recorded — skipping.",
+                mention_author=False,
+            )
+            return
 
         if data is None:
             await ctx.reply(
