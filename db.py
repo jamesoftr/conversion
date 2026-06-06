@@ -56,30 +56,6 @@ def today_label() -> str:
 
 # ── One-time index setup (call at startup) ────────────────────────────────────
 
-    """
-    db_additions.py
-    ───────────────
-    Paste the `ensure_indexes` replacement into db.py,
-    replacing the existing function.
-
-    No other changes to db.py are needed — all Mongo calls for
-    autopause_config and locked_channels live directly in autopause_cog.py.
-    """
-
-    # ── Replace the existing ensure_indexes() in db.py with this ─────────────────
-
-"""
-db_additions.py
-───────────────
-Paste the `ensure_indexes` replacement into db.py,
-replacing the existing function.
-
-No other changes to db.py are needed — all Mongo calls for
-autopause_config and locked_channels live directly in autopause_cog.py.
-"""
-
-# ── Replace the existing ensure_indexes() in db.py with this ─────────────────
-
 async def ensure_indexes() -> None:
     """
     Create query indexes.
@@ -97,7 +73,6 @@ async def ensure_indexes() -> None:
     await db.autopause_config.create_index([("guild_id", 1)], unique=True)
     await db.locked_channels.create_index( [("guild_id", 1), ("channel_id", 1)], unique=True)
 
-    # Add to ensure_indexes():
     await db.custom_pokemon_lists.create_index([("guild_id", 1)], unique=True)
 
     # Element quiz leaderboard index
@@ -109,6 +84,11 @@ async def ensure_indexes() -> None:
     await db.loans.create_index([("guild_id", 1), ("lender_id",   1)])
     await db.loans.create_index([("guild_id", 1), ("borrower_id", 1)])
     await db.loans.create_index([("loan_id",  1)], unique=True)
+
+    # Box tracker index — one doc per user per day per guild
+    await db.box_openings.create_index(
+        [("guild_id", 1), ("user_id", 1), ("date", 1)], unique=True
+    )
 
 # ── Catches ───────────────────────────────────────────────────────────────────
 
@@ -737,6 +717,85 @@ async def update_loan_note(loan_id: str, note: str) -> dict | None:
         {"$set": {"note": note}},
         return_document=True,
     )
+
+
+# ── Box openings ──────────────────────────────────────────────────────────────
+#
+# Collection: box_openings
+# One document per (guild_id, user_id, date).
+# Multiple openings on the same day are merged via $inc / $push.
+#
+# Schema:
+# {
+#   guild_id:      int,
+#   user_id:       int,
+#   date:          str,   # "YYYY-MM-DD" UTC
+#   boxes_opened:  int,
+#   total_pokemon: int,
+#   total_coins:   int,
+#   total_shards:  int,
+#   shinies:       [{"name": str, "iv": float}, ...],
+#   high_iv:       [{"name": str, "iv": float}, ...],
+#   low_iv:        [{"name": str, "iv": float}, ...],
+# }
+
+async def record_box_opening(
+    guild_id:      int,
+    user_id:       int,
+    boxes_opened:  int,
+    total_pokemon: int,
+    shinies:       list[dict],
+    high_iv:       list[dict],
+    low_iv:        list[dict],
+    total_coins:   int,
+    total_shards:  int,
+    date_override: "datetime.date | None" = None,
+) -> None:
+    """
+    Upsert a box-opening session into the daily document for this user.
+    Multiple openings on the same day are accumulated — counters are
+    incremented and notable-pull lists are appended to.
+    Pass date_override (a datetime.date) to record against a historical date.
+    """
+    from datetime import date as _date
+    date_str = (date_override or _date.today()).isoformat()
+
+    await get_db().box_openings.update_one(
+        {"guild_id": guild_id, "user_id": user_id, "date": date_str},
+        {
+            "$inc": {
+                "boxes_opened":  boxes_opened,
+                "total_pokemon": total_pokemon,
+                "total_coins":   total_coins,
+                "total_shards":  total_shards,
+            },
+            "$push": {
+                "shinies": {"$each": shinies},
+                "high_iv": {"$each": high_iv},
+                "low_iv":  {"$each": low_iv},
+            },
+        },
+        upsert=True,
+    )
+
+
+async def get_box_stats(guild_id: int, user_id: int) -> list[dict]:
+    """
+    Return all daily box-opening documents for a user, sorted oldest → newest.
+    Each document has the shape described in the schema above.
+    Missing list fields are defaulted to [] so callers don't need to guard.
+    """
+    cursor = get_db().box_openings.find(
+        {"guild_id": guild_id, "user_id": user_id},
+        sort=[("date", 1)],
+    )
+    docs = await cursor.to_list(length=None)
+    for d in docs:
+        d.setdefault("shinies",  [])
+        d.setdefault("high_iv",  [])
+        d.setdefault("low_iv",   [])
+        d.pop("_id", None)
+    return docs
 
 
 async def get_loan_summary(guild_id: int, user_id: int) -> dict:
