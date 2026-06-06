@@ -67,7 +67,13 @@ async def ensure_indexes() -> None:
     db = get_db()
     await db.catches.create_index([("guild_id", 1), ("timestamp", -1)])
     await db.catches.create_index([("guild_id", 1), ("user_id",   1), ("timestamp", -1)])
+    # Date-bucket indexes for fast per-day queries
+    await db.catches.create_index([("guild_id", 1), ("user_id", 1), ("date", 1)])
+    await db.catches.create_index([("guild_id", 1), ("date", 1)])
     await db.flees.create_index(  [("guild_id", 1), ("timestamp", -1)])
+
+    # Catch dedup — prevents double-recording the same catch message
+    await db.catch_seen_messages.create_index([("message_id", 1)], unique=True)
 
     # Autopause indexes
     await db.autopause_config.create_index([("guild_id", 1)], unique=True)
@@ -97,6 +103,20 @@ async def ensure_indexes() -> None:
 
 # ── Catches ───────────────────────────────────────────────────────────────────
 
+async def mark_catch_message_seen(message_id: int) -> bool:
+    """
+    Insert message_id into the catch seen-set.
+    Returns True if newly inserted (safe to record), False if duplicate (skip).
+    Race-safe via unique index + DuplicateKeyError.
+    """
+    from pymongo.errors import DuplicateKeyError
+    try:
+        await get_db().catch_seen_messages.insert_one({"message_id": message_id})
+        return True
+    except DuplicateKeyError:
+        return False
+
+
 async def record_catch(
     guild_id:    int,
     user_id:     int,
@@ -106,7 +126,21 @@ async def record_catch(
     gigantamax:  bool,
     chain_shiny: bool,
     channel_id:  int,
-) -> None:
+    message_id:  int | None = None,
+) -> bool:
+    """
+    Record a catch event. Returns True if recorded, False if duplicate message.
+    Pass message_id to enable dedup (skips insert if already seen).
+    Each catch doc also carries a 'date' string (YYYY-MM-DD UTC) for
+    efficient per-day queries without scanning the full timestamp range.
+    """
+    if message_id is not None:
+        if not await mark_catch_message_seen(message_id):
+            return False  # duplicate — already recorded
+
+    now      = datetime.now(timezone.utc)
+    date_str = now.strftime("%Y-%m-%d")
+
     await get_db().catches.insert_one({
         "guild_id":    guild_id,
         "user_id":     user_id,
@@ -116,8 +150,11 @@ async def record_catch(
         "gigantamax":  gigantamax,
         "chain_shiny": chain_shiny,
         "channel_id":  channel_id,
-        "timestamp":   datetime.now(timezone.utc),
+        "message_id":  message_id,
+        "timestamp":   now,
+        "date":        date_str,   # UTC date bucket for cheap per-day queries
     })
+    return True
 
 
 # ── Flees ─────────────────────────────────────────────────────────────────────
@@ -148,11 +185,11 @@ async def get_window_reset_info(guild_id: int) -> dict:
 # ── User stats (today + all-time) ─────────────────────────────────────────────
 
 async def get_user_stats(guild_id: int, user_id: int) -> dict:
-    """Returns catch stats for today (UTC midnight → now)."""
-    db    = get_db()
-    since = _today_start()
+    """Returns catch stats for today (UTC date bucket)."""
+    db       = get_db()
+    date_str = today_label()
     pipeline = [
-        {"$match": {"guild_id": guild_id, "user_id": user_id, "timestamp": {"$gte": since}}},
+        {"$match": {"guild_id": guild_id, "user_id": user_id, "date": date_str}},
         {"$group": {
             "_id":         None,
             "total":       {"$sum": 1},
@@ -192,10 +229,10 @@ async def get_user_stats_alltime(guild_id: int, user_id: int) -> dict:
 
 async def get_user_pokemon_list(guild_id: int, user_id: int) -> list[dict]:
     """Returns [{pokemon, count}, ...] sorted descending by count, today only."""
-    db    = get_db()
-    since = _today_start()
+    db       = get_db()
+    date_str = today_label()
     pipeline = [
-        {"$match": {"guild_id": guild_id, "user_id": user_id, "timestamp": {"$gte": since}}},
+        {"$match": {"guild_id": guild_id, "user_id": user_id, "date": date_str}},
         {"$group": {"_id": "$pokemon", "count": {"$sum": 1}}},
         {"$sort":  {"count": -1}},
         {"$project": {"pokemon": "$_id", "count": 1, "_id": 0}},
@@ -219,14 +256,15 @@ async def get_user_pokemon_list_alltime(guild_id: int, user_id: int) -> list[dic
 
 async def get_category_stats(guild_id: int, category_pokemon: set[str]) -> dict:
     """Returns {caught, fled, total_spawned} for a set of Pokémon, today only."""
-    db    = get_db()
-    since = _today_start()
-    plist = list(category_pokemon)
+    db       = get_db()
+    date_str = today_label()
+    since    = _today_start()
+    plist    = list(category_pokemon)
 
     caught = await db.catches.count_documents({
-        "guild_id":  guild_id,
-        "pokemon":   {"$in": plist},
-        "timestamp": {"$gte": since},
+        "guild_id": guild_id,
+        "pokemon":  {"$in": plist},
+        "date":     date_str,
     })
     fled = await db.flees.count_documents({
         "guild_id":  guild_id,
@@ -255,15 +293,14 @@ async def get_category_stats_alltime(guild_id: int, category_pokemon: set[str]) 
 # ── Leaderboard (today + all-time) ────────────────────────────────────────────
 
 async def get_leaderboard(guild_id: int, limit: int = 10) -> list[dict]:
-    """Global catch leaderboard for today (UTC)."""
-    db    = get_db()
-    since = _today_start()
+    """Global catch leaderboard for today (UTC date bucket)."""
+    db       = get_db()
+    date_str = today_label()
     pipeline = [
-        {"$match": {"guild_id": guild_id, "timestamp": {"$gte": since}}},
+        {"$match": {"guild_id": guild_id, "date": date_str}},
         {"$group": {
             "_id":        "$user_id",
             "total":      {"$sum": 1},
-            # exclude chain_shiny catches from plain shiny count to avoid double-counting
             "shiny":      {"$sum": {"$cond": [{"$and": ["$shiny", {"$not": ["$chain_shiny"]}]}, 1, 0]}},
             "gigantamax": {"$sum": {"$cond": ["$gigantamax", 1, 0]}},
         }},
@@ -296,14 +333,14 @@ async def get_leaderboard_alltime(guild_id: int, limit: int = 10) -> list[dict]:
 async def get_category_leaderboard(
     guild_id: int, category_pokemon: set[str], limit: int = 10
 ) -> list[dict]:
-    """Category catch leaderboard for today (UTC)."""
-    db    = get_db()
-    since = _today_start()
+    """Category catch leaderboard for today (UTC date bucket)."""
+    db       = get_db()
+    date_str = today_label()
     pipeline = [
         {"$match": {
-            "guild_id":  guild_id,
-            "pokemon":   {"$in": list(category_pokemon)},
-            "timestamp": {"$gte": since},
+            "guild_id": guild_id,
+            "pokemon":  {"$in": list(category_pokemon)},
+            "date":     date_str,
         }},
         {"$group": {"_id": "$user_id", "total": {"$sum": 1}}},
         {"$sort":  {"total": -1}},
@@ -334,18 +371,17 @@ async def get_category_leaderboard_alltime(
 # ── Shiny leaderboard (today + all-time) ──────────────────────────────────────
 
 async def get_shiny_leaderboard(guild_id: int, limit: int = 10) -> list[dict]:
-    """Shiny catch leaderboard for today (UTC)."""
-    db    = get_db()
-    since = _today_start()
+    """Shiny catch leaderboard for today (UTC date bucket)."""
+    db       = get_db()
+    date_str = today_label()
     pipeline = [
         {"$match": {
-            "guild_id":  guild_id,
-            "timestamp": {"$gte": since},
+            "guild_id": guild_id,
+            "date":     date_str,
             "$or": [{"shiny": True}, {"chain_shiny": True}],
         }},
         {"$group": {
             "_id":         "$user_id",
-            # chain_shiny catches may also have shiny=True; count them only in chain_shiny
             "shiny":       {"$sum": {"$cond": [{"$and": ["$shiny", {"$not": ["$chain_shiny"]}]}, 1, 0]}},
             "chain_shiny": {"$sum": {"$cond": ["$chain_shiny", 1, 0]}},
             "total":       {"$sum": 1},
@@ -390,13 +426,13 @@ async def get_shiny_leaderboard_alltime(guild_id: int, limit: int = 10) -> list[
 # ── Gigantamax leaderboard (today + all-time) ─────────────────────────────────
 
 async def get_gigantamax_leaderboard(guild_id: int, limit: int = 10) -> list[dict]:
-    """Gigantamax catch leaderboard for today (UTC)."""
-    db    = get_db()
-    since = _today_start()
+    """Gigantamax catch leaderboard for today (UTC date bucket)."""
+    db       = get_db()
+    date_str = today_label()
     pipeline = [
         {"$match": {
             "guild_id":   guild_id,
-            "timestamp":  {"$gte": since},
+            "date":       date_str,
             "gigantamax": True,
         }},
         {"$group": {"_id": "$user_id", "total": {"$sum": 1}}},
@@ -445,15 +481,18 @@ async def get_fled_log_channel(guild_id: int, category_key: str) -> int | None:
 
 async def clear_guild_data(guild_id: int) -> dict:
     """
-    [Owner only] Delete ALL catches and flees for a guild (permanent).
-    Returns {"catches": int, "flees": int} with the deleted counts.
+    [Owner only] Delete ALL catches, flees, and the catch dedup cache for a guild.
+    catch_seen_messages has no guild_id so we wipe it entirely (pure dedup cache).
+    Returns {"catches": int, "flees": int, "seen_messages": int} with deleted counts.
     """
     db = get_db()
     catch_result = await db.catches.delete_many({"guild_id": guild_id})
     flee_result  = await db.flees.delete_many({"guild_id": guild_id})
+    seen_result  = await db.catch_seen_messages.delete_many({})
     return {
-        "catches": catch_result.deleted_count,
-        "flees":   flee_result.deleted_count,
+        "catches":       catch_result.deleted_count,
+        "flees":         flee_result.deleted_count,
+        "seen_messages": seen_result.deleted_count,
     }
 
 
