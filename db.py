@@ -90,6 +90,11 @@ async def ensure_indexes() -> None:
         [("guild_id", 1), ("user_id", 1), ("date", 1)], unique=True
     )
 
+    # Dedup index — prevents recording the same embed message twice
+    await db.box_seen_messages.create_index(
+        [("message_id", 1)], unique=True
+    )
+
 # ── Catches ───────────────────────────────────────────────────────────────────
 
 async def record_catch(
@@ -725,7 +730,11 @@ async def update_loan_note(loan_id: str, note: str) -> dict | None:
 # One document per (guild_id, user_id, date).
 # Multiple openings on the same day are merged via $inc / $push.
 #
-# Schema:
+# Collection: box_seen_messages
+# One document per message_id — used to prevent double-recording.
+# { message_id: int }
+#
+# Schema (box_openings):
 # {
 #   guild_id:      int,
 #   user_id:       int,
@@ -734,10 +743,33 @@ async def update_loan_note(loan_id: str, note: str) -> dict | None:
 #   total_pokemon: int,
 #   total_coins:   int,
 #   total_shards:  int,
+#   total_redeems: int,
 #   shinies:       [{"name": str, "iv": float}, ...],
 #   high_iv:       [{"name": str, "iv": float}, ...],
 #   low_iv:        [{"name": str, "iv": float}, ...],
 # }
+
+
+async def is_box_message_seen(message_id: int) -> bool:
+    """Return True if this message_id has already been recorded."""
+    doc = await get_db().box_seen_messages.find_one({"message_id": message_id})
+    return doc is not None
+
+
+async def mark_box_message_seen(message_id: int) -> bool:
+    """
+    Insert message_id into the seen-set.
+    Returns True if newly inserted, False if it was already present
+    (duplicate — caller should skip recording).
+    Uses insert_one with duplicate-key handling so it is race-safe.
+    """
+    from pymongo.errors import DuplicateKeyError
+    try:
+        await get_db().box_seen_messages.insert_one({"message_id": message_id})
+        return True   # freshly inserted → safe to record
+    except DuplicateKeyError:
+        return False  # already seen → skip
+
 
 async def record_box_opening(
     guild_id:      int,
@@ -749,6 +781,7 @@ async def record_box_opening(
     low_iv:        list[dict],
     total_coins:   int,
     total_shards:  int,
+    total_redeems: int = 0,
     date_override: "datetime.date | None" = None,
 ) -> None:
     """
@@ -768,6 +801,7 @@ async def record_box_opening(
                 "total_pokemon": total_pokemon,
                 "total_coins":   total_coins,
                 "total_shards":  total_shards,
+                "total_redeems": total_redeems,
             },
             "$push": {
                 "shinies": {"$each": shinies},
@@ -791,11 +825,28 @@ async def get_box_stats(guild_id: int, user_id: int) -> list[dict]:
     )
     docs = await cursor.to_list(length=None)
     for d in docs:
-        d.setdefault("shinies",  [])
-        d.setdefault("high_iv",  [])
-        d.setdefault("low_iv",   [])
+        d.setdefault("shinies",       [])
+        d.setdefault("high_iv",       [])
+        d.setdefault("low_iv",        [])
+        d.setdefault("total_redeems", 0)
         d.pop("_id", None)
     return docs
+
+
+async def clear_box_data(guild_id: int) -> dict:
+    """
+    Delete ALL box-opening records and seen-message dedup entries for a guild.
+    Returns {"box_openings": int, "seen_messages": int} with deleted counts.
+    """
+    db = get_db()
+    openings_result = await db.box_openings.delete_many({"guild_id": guild_id})
+    # seen_messages has no guild_id — we can only wipe the whole collection
+    # (safe because it is purely a dedup cache and can be rebuilt by backfill)
+    seen_result = await db.box_seen_messages.delete_many({})
+    return {
+        "box_openings":  openings_result.deleted_count,
+        "seen_messages": seen_result.deleted_count,
+    }
 
 
 async def get_loan_summary(guild_id: int, user_id: int) -> dict:
