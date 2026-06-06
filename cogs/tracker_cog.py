@@ -208,7 +208,7 @@ class TrackerCog(commands.Cog):
 
         catch = pk_parser.parse_catch(full_text)
         if catch:
-            await db.record_catch(
+            recorded = await db.record_catch(
                 guild_id=guild_id,
                 user_id=catch.user_id,
                 pokemon=catch.pokemon,
@@ -217,7 +217,10 @@ class TrackerCog(commands.Cog):
                 gigantamax=catch.gigantamax,
                 chain_shiny=catch.chain_shiny,
                 channel_id=channel_id,
+                message_id=message.id,
             )
+            if not recorded:
+                return None  # duplicate — already recorded
             return ("catch", catch)
 
         for embed in message.embeds:
@@ -495,7 +498,8 @@ class TrackerCog(commands.Cog):
             title="🗑️ Data Cleared",
             description=(
                 f"{E.reply} **{deleted['catches']}** catch record(s) deleted\n"
-                f"{E.reply} **{deleted['flees']}** flee record(s) deleted"
+                f"{E.reply} **{deleted['flees']}** flee record(s) deleted\n"
+                f"{E.reply} **{deleted.get('seen_messages', 0)}** dedup cache entries cleared"
             ),
             color=discord.Color.green(),
         )
