@@ -240,25 +240,25 @@ def _build_stats_pages(
         f"1 / {total_pokemon // total_shinies}" if total_shinies else "—"
     )
 
-    summary = discord.Embed(
-        title=f"📦 Box Stats — {target.display_name}",
-        color=discord.Color.gold(),
+    # ── Summary page ─────────────────────────────────────────────────────────
+    summary = discord.Embed(color=discord.Color.gold())
+    summary.set_author(
+        name=target.display_name,
+        icon_url=target.display_avatar.url,
     )
-    summary.set_thumbnail(url=target.display_avatar.url)
-    summary.add_field(
-        name="📊 All-Time Totals",
-        value=(
-            f"{E.reply} **Boxes Opened** — **{total_boxes}**\n"
-            f"{E.reply} **Pokémon Unboxed** — **{total_pokemon}**\n"
-            f"{E.reply} ✨ **Shinies** — **{total_shinies}** *(rate: {shiny_rate})*\n"
-            f"{E.reply} 🔺 **High IV (≥90%)** — **{total_high}**\n"
-            f"{E.reply} 🔻 **Low IV (≤10%)** — **{total_low}**\n"
-            f"{E.reply} 🪙 **Coins** — **{total_coins:,}**\n"
-            f"{E.reply} 💎 **Shards** — **{total_shards}**"
-        ),
-        inline=False,
+    summary.description = (
+        f"# 📦 Box Stats\n"
+        f"> {len(days)} session day(s) tracked\n"
+        f"\n"
+        f"- 📦  **Boxes opened** — `{total_boxes}`\n"
+        f"- 🎴  **Pokémon unboxed** — `{total_pokemon}`\n"
+        f"- ✨  **Shinies** — `{total_shinies}`\n"
+        f"> shiny rate  `{shiny_rate}`\n"
+        f"- 🔺  **High IV ≥90%** — `{total_high}`\n"
+        f"- 🔻  **Low IV ≤10%** — `{total_low}`\n"
+        f"- 🪙  **Coins** — `{total_coins:,}`\n"
+        f"- 💎  **Shards** — `{total_shards}`"
     )
-    summary.set_footer(text=f"Sessions across {len(days)} day(s)")
     pages.append(summary)
 
     # ── One embed per day (newest first) ─────────────────────────────────────
@@ -269,39 +269,30 @@ def _build_stats_pages(
             if day["shinies"] else "—"
         )
 
-        e = discord.Embed(
-            title=f"📅 {label}",
-            color=discord.Color.blurple(),
-        )
+        shiny_lines   = [f"- ✨  {s['name']} — `{s['iv']:.2f}%`" for s in day["shinies"]]
+        high_iv_lines = [f"- 🔺  {h['name']} — `{h['iv']:.2f}%`" for h in day["high_iv"]]
+        low_iv_lines  = [f"- 🔻  {l['name']} — `{l['iv']:.2f}%`" for l in day["low_iv"]]
+        notable_block = "\n".join(shiny_lines + high_iv_lines + low_iv_lines)
+
+        e = discord.Embed(color=discord.Color.blurple())
         e.set_author(
             name=target.display_name,
             icon_url=target.display_avatar.url,
         )
-
-        # Core numbers
-        e.add_field(
-            name="📦 Session",
-            value=(
-                f"{E.reply} **Boxes** — {day['boxes_opened']}\n"
-                f"{E.reply} **Pokémon** — {day['total_pokemon']}\n"
-                f"{E.reply} 🪙 **Coins** — {day['total_coins']:,}\n"
-                f"{E.reply} 💎 **Shards** — {day['total_shards']}"
-            ),
-            inline=True,
+        e.description = (
+            f"# 📅 {label}\n"
+            f"\n"
+            f"- 📦  **Boxes** — `{day['boxes_opened']}`\n"
+            f"- 🎴  **Pokémon** — `{day['total_pokemon']}`\n"
+            f"- 🪙  **Coins** — `{day['total_coins']:,}`\n"
+            f"- 💎  **Shards** — `{day['total_shards']}`\n"
+            f"> shiny rate  `{day_shiny_rate}`\n"
+            + (
+                f"\n**Notable pulls**\n{notable_block}"
+                if notable_block else
+                "\n> *No notable pulls this day*"
+            )
         )
-
-        # Notable pulls
-        shiny_lines   = [f"✨ {s['name']} `{s['iv']:.2f}%`" for s in day["shinies"]]
-        high_iv_lines = [f"🔺 {h['name']} `{h['iv']:.2f}%`" for h in day["high_iv"]]
-        low_iv_lines  = [f"🔻 {l['name']} `{l['iv']:.2f}%`" for l in day["low_iv"]]
-        notable = shiny_lines + high_iv_lines + low_iv_lines
-        e.add_field(
-            name="⭐ Notable Pulls",
-            value="\n".join(notable) if notable else "*None*",
-            inline=True,
-        )
-
-        e.set_footer(text=f"Shiny rate this day: {day_shiny_rate}")
         pages.append(e)
 
     return pages
@@ -423,15 +414,15 @@ class BoxTrackerCog(commands.Cog):
 
         if not days:
             await ctx.reply(
-                f"No box-opening data recorded for **{target.display_name}** yet."
+                f"No box-opening data recorded for **{target.display_name}** yet.",
+                mention_author=False,
             )
             return
 
         pages = _build_stats_pages(target, days)
         view  = BoxStatsView(pages)
 
-        # page 0 is the summary
-        await ctx.reply(embed=pages[0], view=view)
+        await ctx.reply(embed=pages[0], view=view, mention_author=False)
 
     # ── a!boxcheck ────────────────────────────────────────────────────────────
 
@@ -445,7 +436,8 @@ class BoxTrackerCog(commands.Cog):
         """
         if ctx.message.reference is None:
             await ctx.reply(
-                "❌ Please **reply** to a Pokétwo box-opening message to record it."
+                "❌ Please **reply** to a Pokétwo box-opening message to record it.",
+                mention_author=False,
             )
             return
 
@@ -453,18 +445,19 @@ class BoxTrackerCog(commands.Cog):
             ref    = ctx.message.reference
             target = ref.resolved or await ctx.channel.fetch_message(ref.message_id)
         except discord.NotFound:
-            await ctx.reply("❌ Could not fetch that message.")
+            await ctx.reply("❌ Could not fetch that message.", mention_author=False)
             return
 
         if target.author.id != POKETWO_BOT_ID:
             await ctx.reply(
                 f"❌ That message is not from Pokétwo (ID `{POKETWO_BOT_ID}`). "
-                "Only Pokétwo box-opening messages can be recorded."
+                "Only Pokétwo box-opening messages can be recorded.",
+                mention_author=False,
             )
             return
 
         if not target.guild:
-            await ctx.reply("❌ That message is not in a server.")
+            await ctx.reply("❌ That message is not in a server.", mention_author=False)
             return
 
         # Pass the original message's date so historical adds land on the right day
@@ -474,42 +467,100 @@ class BoxTrackerCog(commands.Cog):
         if data is None:
             await ctx.reply(
                 "❌ Could not parse that message as a box opening.\n"
-                "-# Make sure it is a Pokétwo 📦 Supply Crates result embed."
+                "-# Make sure it is a Pokétwo 📦 Supply Crates result embed.",
+                mention_author=False,
             )
             return
 
-        shiny_lines   = [f"✨ {s['name']} `{s['iv']:.2f}%`" for s in data["shinies"]]
-        high_iv_lines = [f"🔺 {h['name']} `{h['iv']:.2f}%`" for h in data["high_iv"]]
-        low_iv_lines  = [f"🔻 {l['name']} `{l['iv']:.2f}%`" for l in data["low_iv"]]
-        notable       = shiny_lines + high_iv_lines + low_iv_lines
+        shiny_lines   = [f"- ✨  {s['name']} — `{s['iv']:.2f}%`" for s in data["shinies"]]
+        high_iv_lines = [f"- 🔺  {h['name']} — `{h['iv']:.2f}%`" for h in data["high_iv"]]
+        low_iv_lines  = [f"- 🔻  {l['name']} — `{l['iv']:.2f}%`" for l in data["low_iv"]]
+        notable_block = "\n".join(shiny_lines + high_iv_lines + low_iv_lines)
 
-        e = discord.Embed(
-            title="✅ Box opening recorded",
-            color=discord.Color.green(),
-        )
-        e.add_field(
-            name="📦 Session",
-            value=(
-                f"{E.reply} **User:** <@{data['user_id']}>\n"
-                f"{E.reply} **Date:** {_day_label(original_date.isoformat())}\n"
-                f"{E.reply} **Boxes:** {data['boxes_opened']}\n"
-                f"{E.reply} **Pokémon:** {data['total_pokemon']}\n"
-                f"{E.reply} 🪙 **Coins:** {data['total_coins']:,}\n"
-                f"{E.reply} 💎 **Shards:** {data['total_shards']}"
-            ),
-            inline=False,
-        )
-        if notable:
-            e.add_field(
-                name="⭐ Notable Pulls",
-                value="\n".join(notable),
-                inline=False,
+        e = discord.Embed(color=discord.Color.green())
+        e.description = (
+            f"# ✅ Box opening recorded\n"
+            f"> {_day_label(original_date.isoformat())}\n"
+            f"\n"
+            f"- 👤  **User** — <@{data['user_id']}>\n"
+            f"- 📦  **Boxes** — `{data['boxes_opened']}`\n"
+            f"- 🎴  **Pokémon** — `{data['total_pokemon']}`\n"
+            f"- 🪙  **Coins** — `{data['total_coins']:,}`\n"
+            f"- 💎  **Shards** — `{data['total_shards']}`"
+            + (
+                f"\n\n**Notable pulls**\n{notable_block}"
+                if notable_block else ""
             )
-        e.set_footer(text=f"Recorded by {ctx.author}")
-        await ctx.reply(embed=e)
+        )
+        e.set_footer(text=f"Recorded by {ctx.author.display_name}")
+        await ctx.reply(embed=e, mention_author=False)
 
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(BoxTrackerCog(bot))
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# DB SCHEMA  (add these functions to your db.py)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Collection:  box_openings
+# Document structure (one doc per user per day):
+#
+# {
+#   "guild_id":      int,
+#   "user_id":       int,
+#   "date":          str,          # "YYYY-MM-DD" (UTC)
+#   "boxes_opened":  int,
+#   "total_pokemon": int,
+#   "total_coins":   int,
+#   "total_shards":  int,
+#   "shinies":  [{"name": str, "iv": float}, ...],
+#   "high_iv":  [{"name": str, "iv": float}, ...],
+#   "low_iv":   [{"name": str, "iv": float}, ...],
+# }
+#
+# Suggested index:  { guild_id: 1, user_id: 1, date: 1 }  (unique)
+#
+# ── record_box_opening ────────────────────────────────────────────────────────
+#
+# async def record_box_opening(
+#     guild_id, user_id,
+#     boxes_opened, total_pokemon,
+#     shinies, high_iv, low_iv,
+#     total_coins, total_shards,
+#     date_override=None,
+# ):
+#     coll = _db().box_openings
+#     date_str = (date_override or datetime.date.today()).isoformat()
+#
+#     await coll.update_one(
+#         {"guild_id": guild_id, "user_id": user_id, "date": date_str},
+#         {"$inc": {
+#             "boxes_opened":  boxes_opened,
+#             "total_pokemon": total_pokemon,
+#             "total_coins":   total_coins,
+#             "total_shards":  total_shards,
+#         },
+#          "$push": {
+#             "shinies":  {"$each": shinies},
+#             "high_iv":  {"$each": high_iv},
+#             "low_iv":   {"$each": low_iv},
+#         }},
+#         upsert=True,
+#     )
+#
+# ── get_box_stats ─────────────────────────────────────────────────────────────
+#
+# async def get_box_stats(guild_id, user_id) -> list[dict]:
+#     coll   = _db().box_openings
+#     cursor = coll.find(
+#         {"guild_id": guild_id, "user_id": user_id},
+#         sort=[("date", 1)],
+#     )
+#     docs = await cursor.to_list(length=None)
+#     for d in docs:
+#         d.setdefault("shinies",  [])
+#         d.setdefault("high_iv",  [])
+#         d.setdefault("low_iv",   [])
+#     return docs
