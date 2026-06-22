@@ -4,11 +4,13 @@ import os
 import asyncio
 import db
 import pokedata
+import font_downloader   # ← NEW
 
 TOKEN = os.getenv("DISCORD_TOKEN", "YOUR_BOT_TOKEN_HERE")
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True   # ← REQUIRED for on_member_join / on_member_remove
 
 # enable_debug_events=True is REQUIRED for on_socket_raw_receive to fire (converter cog)
 bot = commands.Bot(
@@ -16,7 +18,7 @@ bot = commands.Bot(
     help_command=None,
     intents=intents,
     enable_debug_events=True,
-    case_insensitive=True,   # ← add this
+    case_insensitive=True,
 )
 
 
@@ -29,7 +31,8 @@ async def on_ready():
 
 async def main():
     pokedata.load()
-    await db.ensure_indexes()   # create query indexes (idempotent)
+    await font_downloader.ensure_fonts()   # ← download Poppins fonts on startup
+    await db.ensure_indexes()              # create query indexes (idempotent)
     async with bot:
         await bot.load_extension("cogs.help_cog")
         await bot.load_extension("cogs.admin_cog")
@@ -39,7 +42,8 @@ async def main():
         await bot.load_extension("cogs.leaderboard_cog")
         await bot.load_extension("cogs.calculator_cog")
         await bot.load_extension("cogs.category_cog")
-        await bot.load_extension("cogs.autopause_cog")   # ← NEW
+        await bot.load_extension("cogs.autopause_cog")
+        await bot.load_extension("cogs.welcome_cog")   # ← NEW
         await bot.start(TOKEN)
 
 
