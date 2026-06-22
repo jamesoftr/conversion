@@ -337,7 +337,7 @@ class WelcomeCog(commands.Cog):
             if sr:
                 granted_roles.append(sr.mention)
 
-        # Build embed (all the details live here, NO pings)
+        # Build embed
         REPLY = "<:reply:1503236369126916117>"
         embed = discord.Embed(colour=discord.Colour(0xFF00C8))
         embed.set_author(
@@ -346,7 +346,7 @@ class WelcomeCog(commands.Cog):
         )
 
         lines = [
-            f"{REPLY} **{member.display_name}** just joined the server.",
+            f"{REPLY} {member.mention} **({member.display_name})** just joined the server.",
             f"{REPLY} You are member **#{guild.member_count}**.",
         ]
         if inviter:
@@ -361,8 +361,8 @@ class WelcomeCog(commands.Cog):
             icon_url=member.display_avatar.url,
         )
 
-        # Use Tenor GIF as the embed image
-        embed.set_image(url="https://media.tenor.com/LhAcgk14aMkAAAAC/team-rocket-pokemon.gif")
+        # Direct GIF media URL — Tenor page URLs don't embed, must use media.tenor.com
+        embed.set_image(url="https://media.tenor.com/LhAcgk14aMkAAAAd/team-rocket-pokemon.gif")
         await channel.send(embed=embed)
 
     @commands.Cog.listener()
