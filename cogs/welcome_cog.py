@@ -326,10 +326,19 @@ class WelcomeCog(commands.Cog):
         if not channel or not isinstance(channel, discord.TextChannel):
             return
 
-        # Build card
-        card_file = await build_welcome_card(member, guild)
+        # Collect roles that were granted
+        granted_roles: list[str] = []
+        if auto_role_id:
+            ar = guild.get_role(int(auto_role_id))
+            if ar:
+                granted_roles.append(ar.mention)
+        if special_role_id:
+            sr = guild.get_role(int(special_role_id))
+            if sr:
+                granted_roles.append(sr.mention)
 
         # Build embed (all the details live here, NO pings)
+        REPLY = "<:reply:1503236369126916117>"
         embed = discord.Embed(colour=discord.Colour(0xFF00C8))
         embed.set_author(
             name=f"Welcome to {guild.name}!",
@@ -337,11 +346,14 @@ class WelcomeCog(commands.Cog):
         )
 
         lines = [
-            f"**{member.display_name}** just joined the server.",
-            f"You are member **#{guild.member_count}**.",
+            f"{REPLY} **{member.display_name}** just joined the server.",
+            f"{REPLY} You are member **#{guild.member_count}**.",
         ]
         if inviter:
-            lines.append(f"Invited by **{inviter.display_name}**.")
+            lines.append(f"{REPLY} Invited by **{inviter.display_name}**.")
+        if granted_roles:
+            roles_str = ", ".join(granted_roles)
+            lines.append(f"{REPLY} Auto-roles given: {roles_str}")
 
         embed.description = "\n".join(lines)
         embed.set_footer(
@@ -349,11 +361,9 @@ class WelcomeCog(commands.Cog):
             icon_url=member.display_avatar.url,
         )
 
-        if card_file:
-            embed.set_image(url="attachment://welcome.png")
-            await channel.send(embed=embed, file=card_file)
-        else:
-            await channel.send(embed=embed)
+        # Use Tenor GIF as the embed image
+        embed.set_image(url="https://media.tenor.com/LhAcgk14aMkAAAAC/team-rocket-pokemon.gif")
+        await channel.send(embed=embed)
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
