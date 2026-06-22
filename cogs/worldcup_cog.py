@@ -23,12 +23,42 @@ Endpoints used:
 Commands  (prefix a!)
 ─────────────────────
   a!wc live                — Live scores right now
-  a!wc today               — All matches today
-  a!wc group <A–L>         — Group standings table
-  a!wc groups              — All 12 groups, paginated ◀▶
-  a!wc team <name>         — Team schedule (e.g. France, Brazil)
-  a!wc next [team]         — Next upcoming match (optional team filter)
-  a!wc about               — Tournament info & commands
+  a!wc today                — All matches today
+  a!wc group <A–L>          — Group standings table
+  a!wc groups                — All 12 groups, paginated ◀▶
+  a!wc team <name>          — Team schedule (e.g. France, Brazil)
+  a!wc next [team]           — Next upcoming match (optional team filter)
+  a!wc about                 — Tournament info & commands
+
+─────────────────────────────────────────────────────────────────────────────────
+FIXES APPLIED (2026-06-22):
+
+  1. _score() now handles ESPN's dict-shaped score objects, e.g.:
+       {'$ref': 'http://sports.core.api.espn.pvt/...', 'value': 3.0,
+        'displayValue': '3', 'winner': True, 'source': {...}}
+     Previously this dict was stringified raw into Discord messages
+     (visible in `a!wc team`, `a!wc live`, `a!wc today`). Now pulls
+     displayValue / value out of it.
+
+  2. Added _extract_groups() to read ESPN's *actual* confirmed standings
+     shape. The standings endpoint does NOT have a flat top-level
+     "standings" list — it nests groups under "children", with each
+     child's entries at children[i]["standings"]["entries"]:
+
+       {
+         "children": [
+           {
+             "name": "Group A",
+             "standings": { "entries": [ {...team entries...} ] }
+           },
+           ...
+         ]
+       }
+
+     wc_group / wc_groups previously did `data.get("standings", [])` at
+     the top level, which is always empty — that's why both commands
+     reported "standings not available." Confirmed via a live dump of
+     the endpoint on 2026-06-22.
 """
 
 from __future__ import annotations
@@ -156,7 +186,19 @@ def _team_name(competitor: dict) -> str:
 
 
 def _score(competitor: dict) -> str:
-    return competitor.get("score", "–")
+    """
+    Return a display-ready score string.
+
+    FIX: ESPN sometimes returns "score" as a dict instead of a plain string,
+    e.g. {'$ref': 'http://sports.core.api.espn.pvt/...', 'value': 3.0,
+          'displayValue': '3', 'winner': True, 'source': {...}}
+    Previously that raw dict got stringified directly into Discord embeds.
+    Now we pull out displayValue (preferred) or value.
+    """
+    score = competitor.get("score", "–")
+    if isinstance(score, dict):
+        return score.get("displayValue") or str(score.get("value", "–"))
+    return str(score)
 
 
 def _event_status(competition: dict) -> tuple[str, str]:
@@ -232,16 +274,67 @@ def _match_line(event: dict) -> str:
     )
 
 
+# ── Standings normalization ───────────────────────────────────────────────────
+
+def _extract_groups(data: dict) -> list[dict]:
+    """
+    Normalize an ESPN standings payload into a flat list of
+    {"name": str, "entries": [...]} dicts.
+
+    CONFIRMED SHAPE (live dump, 2026-06-22): ESPN's fifa.world standings
+    endpoint nests groups under "children", NOT a flat top-level
+    "standings" list:
+
+        data["children"][i]["name"]                       -> "Group A"
+        data["children"][i]["standings"]["entries"]        -> [ {team entries} ]
+
+    A flat top-level "standings" list is kept as a fallback in case ESPN
+    changes shape again or another endpoint is reused with this helper.
+    """
+    groups: list[dict] = []
+
+    # Confirmed shape: nested under "children"
+    for child in data.get("children", []):
+        name = child.get("name") or child.get("abbreviation") or "Group ?"
+        standings_obj = child.get("standings", {})
+        entries = standings_obj.get("entries", []) if isinstance(standings_obj, dict) else []
+        if entries:
+            groups.append({"name": name, "entries": entries})
+
+    if groups:
+        return groups
+
+    # Fallback shape: flat top-level "standings" list, each item a group
+    flat = data.get("standings")
+    if isinstance(flat, list) and flat:
+        for s in flat:
+            entries = s.get("entries")
+            if not entries and isinstance(s.get("standings"), dict):
+                entries = s["standings"].get("entries", [])
+            if entries:
+                groups.append({"name": s.get("name", "Group ?"), "entries": entries})
+
+    return groups
+
+
 # ── Paginator ─────────────────────────────────────────────────────────────────
 
 class Paginator(discord.ui.View):
+    """
+    NOTE: do NOT name a method on this class "_refresh". discord.py's own
+    View base class defines an internal _refresh(self, components) that
+    the gateway calls automatically on MESSAGE_UPDATE events to resync
+    button state. Overriding it with a no-arg version causes:
+        TypeError: Paginator._refresh() takes 1 positional argument but 2 were given
+    Use a differently-named helper instead (here: _update_button_state).
+    """
     def __init__(self, pages: list[discord.Embed]):
         super().__init__(timeout=300)
         self.pages = pages
         self.page  = 0
-        self._refresh()
+        self._update_button_state()
 
-    def _refresh(self):
+    def _update_button_state(self):
         self.prev_btn.disabled = self.page == 0
         self.next_btn.disabled = self.page >= len(self.pages) - 1
 
@@ -249,14 +342,14 @@ class Paginator(discord.ui.View):
     async def prev_btn(self, interaction: discord.Interaction, _):
         await interaction.response.defer()
         self.page -= 1
-        self._refresh()
+        self._update_button_state()
         await interaction.message.edit(embed=self.pages[self.page], view=self)
 
     @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
     async def next_btn(self, interaction: discord.Interaction, _):
         await interaction.response.defer()
         self.page += 1
-        self._refresh()
+        self._update_button_state()
         await interaction.message.edit(embed=self.pages[self.page], view=self)
 
 
@@ -384,9 +477,7 @@ class WorldCupCog(commands.Cog):
                 await ctx.reply(f"❌ ESPN API error: {exc}", mention_author=False)
                 return
 
-        # ESPN standings: data["standings"] is a list of group objects
-        # each has "name" like "Group A" and "entries" list
-        standings_list = data.get("standings", [])
+        standings_list = _extract_groups(data)
         target = next(
             (s for s in standings_list
              if s.get("name", "").upper().endswith(group_letter)),
@@ -415,7 +506,7 @@ class WorldCupCog(commands.Cog):
                 await ctx.reply(f"❌ ESPN API error: {exc}", mention_author=False)
                 return
 
-        standings_list = data.get("standings", [])
+        standings_list = _extract_groups(data)
         if not standings_list:
             await ctx.reply("❌ No standings data available yet.", mention_author=False)
             return
@@ -638,9 +729,20 @@ def _build_group_embed(letter: str, standing: dict) -> discord.Embed:
     """Build a standings table embed from an ESPN standings group object."""
     entries = standing.get("entries", [])
 
-    # Sort by rank ESPN provides, fallback to points
-    entries.sort(key=lambda e: e.get("stats", [{}])[0].get("value", 0)
-                 if not e.get("stats") else 0)
+    # Sort by rank ESPN provides via note.rank (confirmed field), falling
+    # back to points if rank isn't present.
+    def _sort_key(entry: dict):
+        note = entry.get("note") or {}
+        rank = note.get("rank")
+        if rank is not None:
+            return rank
+        stats = entry.get("stats", [])
+        for s in stats:
+            if s.get("name") == "points":
+                return -float(s.get("value", 0) or 0)
+        return 0
+
+    entries = sorted(entries, key=_sort_key)
 
     lines = [
         "```",
