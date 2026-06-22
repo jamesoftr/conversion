@@ -377,16 +377,18 @@ class WelcomeCog(commands.Cog):
         if not channel or not isinstance(channel, discord.TextChannel):
             return
 
+        REPLY = "<:reply:1503236369126916117>"
         embed = discord.Embed(
             title="👋  Someone Left",
             description=(
-                f"**{member.display_name}** (`{member.name}`) just left the server.\n"
-                f"We are now **{guild.member_count}** members."
+                f"{REPLY} {member.mention} **({member.display_name})** just left the server.\n"
+                f"{REPLY} We are now **{guild.member_count}** members."
             ),
             colour=discord.Colour(0xED4245),
         )
         embed.set_thumbnail(url=member.display_avatar.url)
         embed.set_footer(text=member.created_at.strftime("Joined Discord: %d %b %Y"))
+        embed.set_image(url="https://media.tenor.com/jt2MDDhpREIAAAAd/pokemon-fly.gif")
         await channel.send(embed=embed)
 
     # ── Slash commands ────────────────────────────────────────────────────────
