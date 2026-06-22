@@ -40,6 +40,12 @@ except ImportError:
 
 FONTS_DIR = Path("fonts")
 
+# ── GIF URLs ──────────────────────────────────────────────────────────────────
+# Upload each GIF to any Discord channel, right-click → Copy Link,
+# then paste the cdn.discordapp.com URL below.
+WELCOME_GIF_URL = "https://cdn.discordapp.com/attachments/1518532167641206784/1518546459195084840/team-rocket.gif?ex=6a3a5019&is=6a38fe99&hm=ac2d4a4e774c6c88b9ba0b023be785a88a01cefca2c57dde0f5382eaed878d02&"   # e.g. "https://cdn.discordapp.com/attachments/.../welcome.gif"
+LEAVE_GIF_URL   = "https://cdn.discordapp.com/attachments/1518532167641206784/1518546459509788672/pokemon-fly.gif?ex=6a3a5019&is=6a38fe99&hm=3047ad9c85ff55f9f8de1590cfb7ea496f8b965b55b2145a509d234d6476c6b5&"   # e.g. "https://cdn.discordapp.com/attachments/.../leave.gif"
+
 def _font(name: str, size: int):
     p = FONTS_DIR / name
     if PIL_OK and p.exists():
@@ -361,8 +367,8 @@ class WelcomeCog(commands.Cog):
             icon_url=member.display_avatar.url,
         )
 
-        # Direct GIF media URL — Tenor page URLs don't embed, must use media.tenor.com
-        embed.set_image(url="https://media.tenor.com/LhAcgk14aMkAAAAd/team-rocket-pokemon.gif")
+        if WELCOME_GIF_URL:
+            embed.set_image(url=WELCOME_GIF_URL)
         await channel.send(embed=embed)
 
     @commands.Cog.listener()
@@ -388,7 +394,8 @@ class WelcomeCog(commands.Cog):
         )
         embed.set_thumbnail(url=member.display_avatar.url)
         embed.set_footer(text=member.created_at.strftime("Joined Discord: %d %b %Y"))
-        embed.set_image(url="https://media.tenor.com/jt2MDDhpREIAAAAd/pokemon-fly.gif")
+        if LEAVE_GIF_URL:
+            embed.set_image(url=LEAVE_GIF_URL)
         await channel.send(embed=embed)
 
     # ── Slash commands ────────────────────────────────────────────────────────
