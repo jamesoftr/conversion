@@ -36,6 +36,7 @@ async def main():
     async with bot:
         await bot.load_extension("cogs.help_cog")
         await bot.load_extension("cogs.admin_cog")
+        await bot.load_extension("cogs.worldcup_cog")
         await bot.load_extension("cogs.loans_cog")
         await bot.load_extension("cogs.converter_cog")
         await bot.load_extension("cogs.tracker_cog")
