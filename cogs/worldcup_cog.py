@@ -63,6 +63,7 @@ FIXES APPLIED (2026-06-22):
 
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -79,6 +80,11 @@ HEADERS      = {"User-Agent": "Mozilla/5.0 (compatible; DiscordBot)"}
 
 CACHE_LIVE    = 60    # seconds — for live scores
 CACHE_DEFAULT = 300   # 5 min   — for fixtures, standings, team lists
+
+LIVE_REFRESH_INTERVAL = 60    # seconds between auto-edits of a!wc live
+LIVE_MAX_IDLE_CHECKS  = 10    # stop auto-updating after this many consecutive
+                               # checks with zero live matches (~10 min idle),
+                               # so the task doesn't run forever in a quiet channel
 
 GROUPS = list("ABCDEFGHIJKL")
 
@@ -317,6 +323,43 @@ def _extract_groups(data: dict) -> list[dict]:
     return groups
 
 
+def _build_live_embed(live_events: list[dict], *, stopped: bool = False) -> discord.Embed:
+    """
+    Build the 'live scores' embed. Shared by the initial a!wc live send and
+    the background auto-refresh loop so both stay visually identical.
+    """
+    if not live_events:
+        embed = discord.Embed(
+            title="⚽ World Cup 2026 — Live Scores",
+            description="No matches are live right now.\nUse `a!wc today` to see today's schedule.",
+            color=discord.Color.greyple(),
+        )
+        if stopped:
+            embed.set_footer(text="Auto-updates stopped (no live matches for a while)  •  Powered by ESPN")
+        else:
+            embed.set_footer(text=f"Auto-updating every {LIVE_REFRESH_INTERVAL}s  •  Powered by ESPN")
+        return embed
+
+    lines = [_match_line(e) for e in live_events]
+    embed = discord.Embed(
+        title="🟢 World Cup 2026 — Live Now",
+        description="\n".join(lines),
+        color=discord.Color.green(),
+    )
+    if stopped:
+        embed.set_footer(text="Auto-updates stopped  •  Run a!wc live again to resume  •  Powered by ESPN")
+    else:
+        embed.set_footer(text=f"Auto-updating every {LIVE_REFRESH_INTERVAL}s  •  Powered by ESPN")
+    return embed
+
+
+async def _fetch_live_events() -> list[dict]:
+    """Fetch the scoreboard and return only the currently-live events."""
+    data   = await _get(f"{ESPN_BASE}/scoreboard", ttl=CACHE_LIVE)
+    events = data.get("events", [])
+    return [e for e in events if _is_live(e.get("competitions", [{}])[0])]
+
+
 # ── Paginator ─────────────────────────────────────────────────────────────────
 
 class Paginator(discord.ui.View):
@@ -359,6 +402,18 @@ class WorldCupCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # One auto-updating "a!wc live" task per channel. Keyed by channel
+        # ID. Starting a new a!wc live in the same channel cancels whatever
+        # task is already running here before starting the new one, so only
+        # the most recent message ever keeps updating.
+        self._live_tasks: dict[int, asyncio.Task] = {}
+
+    def cog_unload(self):
+        # Make sure no background loops keep running (and keep hitting the
+        # ESPN API) after the cog is unloaded/reloaded.
+        for task in self._live_tasks.values():
+            task.cancel()
+        self._live_tasks.clear()
 
     # ── Base ──────────────────────────────────────────────────────────────────
 
@@ -381,36 +436,77 @@ class WorldCupCog(commands.Cog):
 
     @wc.command(name="live")
     async def wc_live(self, ctx: commands.Context):
-        """Show all currently live World Cup matches."""
+        """
+        Show live World Cup matches, auto-updating every ~60s.
+        Only one auto-updating message per channel — running this again
+        stops the previous one and starts updating the new message instead.
+        """
+        # Stop any previous auto-updater running in this channel so we never
+        # have two messages fighting to be "the live one."
+        old_task = self._live_tasks.get(ctx.channel.id)
+        if old_task and not old_task.done():
+            old_task.cancel()
+
         async with ctx.typing():
             try:
-                data   = await _get(f"{ESPN_BASE}/scoreboard", ttl=CACHE_LIVE)
-                events = data.get("events", [])
-                live   = [
-                    e for e in events
-                    if _is_live(e.get("competitions", [{}])[0])
-                ]
+                live = await _fetch_live_events()
             except Exception as exc:
                 await ctx.reply(f"❌ ESPN API error: {exc}", mention_author=False)
                 return
 
-        if not live:
-            embed = discord.Embed(
-                title="⚽ World Cup 2026 — Live Scores",
-                description="No matches are live right now.\nUse `a!wc today` to see today's schedule.",
-                color=discord.Color.greyple(),
-            )
-            await ctx.reply(embed=embed, mention_author=False)
-            return
+        embed = _build_live_embed(live)
+        message = await ctx.reply(embed=embed, mention_author=False)
 
-        lines = [_match_line(e) for e in live]
-        embed = discord.Embed(
-            title="🟢 World Cup 2026 — Live Now",
-            description="\n".join(lines),
-            color=discord.Color.green(),
-        )
-        embed.set_footer(text="Cached for ~60s  •  Powered by ESPN")
-        await ctx.reply(embed=embed, mention_author=False)
+        task = asyncio.create_task(self._live_update_loop(message, ctx.channel.id))
+        self._live_tasks[ctx.channel.id] = task
+
+    async def _live_update_loop(self, message: discord.Message, channel_id: int):
+        """
+        Background loop that edits `message` in place every
+        LIVE_REFRESH_INTERVAL seconds with the latest live scores.
+
+        Stops when:
+          - it's cancelled (a newer a!wc live started in the same channel,
+            or the cog is unloaded)
+          - the message was deleted (discord.NotFound)
+          - the bot lost permission to edit it (discord.Forbidden)
+          - there have been no live matches for LIVE_MAX_IDLE_CHECKS checks
+            in a row, so a quiet channel doesn't poll ESPN forever
+        """
+        idle_checks = 0
+        try:
+            while True:
+                await asyncio.sleep(LIVE_REFRESH_INTERVAL)
+
+                try:
+                    live = await _fetch_live_events()
+                except Exception:
+                    # Transient ESPN hiccup — skip this tick, try again next time.
+                    continue
+
+                idle_checks = idle_checks + 1 if not live else 0
+                stopped = idle_checks >= LIVE_MAX_IDLE_CHECKS
+
+                embed = _build_live_embed(live, stopped=stopped)
+                try:
+                    await message.edit(embed=embed)
+                except discord.NotFound:
+                    return   # message deleted — nothing left to update
+                except discord.Forbidden:
+                    return   # lost perms — give up quietly
+
+                if stopped:
+                    return
+        except asyncio.CancelledError:
+            # A newer a!wc live took over, or the cog unloaded. Don't touch
+            # the message here — the new task (or nothing) owns it now.
+            raise
+        finally:
+            # Only clear ourselves out of the registry if we're still the
+            # one registered for this channel (a newer task may already
+            # have replaced us by the time we get here).
+            if self._live_tasks.get(channel_id) is asyncio.current_task():
+                del self._live_tasks[channel_id]
 
     # ── a!wc today ────────────────────────────────────────────────────────────
 
