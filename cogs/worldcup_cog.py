@@ -497,8 +497,14 @@ class WorldCupCog(commands.Cog):
     # ── a!wc groups ───────────────────────────────────────────────────────────
 
     @wc.command(name="groups")
-    async def wc_groups(self, ctx: commands.Context):
-        """Browse all 12 group standings with ◀▶ buttons."""
+    async def wc_groups(self, ctx: commands.Context, groups_per_page: int = 4):
+        """
+        Browse all 12 group standings with ◀▶ buttons, several groups per page.
+        Example: a!wc groups          (4 groups per page, 3 pages total)
+                 a!wc groups 6         (6 groups per page, 2 pages total)
+        """
+        groups_per_page = max(1, min(groups_per_page, 12))
+
         async with ctx.typing():
             try:
                 data = await _get(f"{ESPN_V2_BASE}/standings")
@@ -511,13 +517,23 @@ class WorldCupCog(commands.Cog):
             await ctx.reply("❌ No standings data available yet.", mention_author=False)
             return
 
-        pages = []
-        for s in standings_list:
-            name   = s.get("name", "Group ?")
-            letter = name.split()[-1].upper() if name else "?"
-            embed  = _build_group_embed(letter, s)
-            embed.set_footer(text=f"{name}  •  Page {len(pages)+1}/{len(standings_list)}  •  Powered by ESPN")
-            pages.append(embed)
+        # Keep groups in A–L order rather than whatever order ESPN returns
+        standings_list.sort(key=lambda s: s.get("name", "Group ZZ"))
+
+        chunks = [
+            standings_list[i : i + groups_per_page]
+            for i in range(0, len(standings_list), groups_per_page)
+        ]
+        total_pages = len(chunks)
+
+        pages = [
+            _build_groups_page_embed(chunk, page_num=i + 1, total_pages=total_pages)
+            for i, chunk in enumerate(chunks)
+        ]
+
+        if len(pages) == 1:
+            await ctx.reply(embed=pages[0], mention_author=False)
+            return
 
         view = Paginator(pages)
         await ctx.reply(embed=pages[0], view=view, mention_author=False)
@@ -723,14 +739,19 @@ class WorldCupCog(commands.Cog):
             raise error
 
 
-# ── Standings embed builder ───────────────────────────────────────────────────
+# ── Standings table helpers ───────────────────────────────────────────────────
 
-def _build_group_embed(letter: str, standing: dict) -> discord.Embed:
-    """Build a standings table embed from an ESPN standings group object."""
+def _stat(stats: list, name: str) -> int:
+    for s in stats:
+        if s.get("name") == name or s.get("shortDisplayName") == name:
+            return int(s.get("value", 0) or 0)
+    return 0
+
+
+def _sorted_entries(standing: dict) -> list[dict]:
+    """Sort group entries by ESPN's note.rank, falling back to points."""
     entries = standing.get("entries", [])
 
-    # Sort by rank ESPN provides via note.rank (confirmed field), falling
-    # back to points if rank isn't present.
     def _sort_key(entry: dict):
         note = entry.get("note") or {}
         rank = note.get("rank")
@@ -742,21 +763,29 @@ def _build_group_embed(letter: str, standing: dict) -> discord.Embed:
                 return -float(s.get("value", 0) or 0)
         return 0
 
-    entries = sorted(entries, key=_sort_key)
+    return sorted(entries, key=_sort_key)
+
+
+def _group_table_block(standing: dict, name_width: int = 22) -> str:
+    """
+    Build just the monospace standings table (no embed, no surrounding
+    text) for one group, e.g.:
+
+        #  Team                    P  W  D  L  GF  GA   GD  Pts
+        ─────────────────────────────────────────────────
+        1  🇲🇽 Mexico               2  2  0  0   5   1   +4    6
+        ...
+
+    Shared by both the single-group view (a!wc group <letter>) and the
+    multi-group-per-page view (a!wc groups), so the column layout only
+    needs to be defined in one place.
+    """
+    entries = _sorted_entries(standing)
 
     lines = [
-        "```",
-        f"{'#':<2} {'Team':<22} {'P':>2} {'W':>2} {'D':>2} {'L':>2} {'GF':>3} {'GA':>3} {'GD':>4} {'Pts':>4}",
-        "─" * 52,
+        f"{'#':<2} {'Team':<{name_width}} {'P':>2} {'W':>2} {'D':>2} {'L':>2} {'GF':>3} {'GA':>3} {'GD':>4} {'Pts':>4}",
+        "─" * (12 + name_width + 18),
     ]
-
-    def _stat(stats: list, name: str) -> int:
-        for s in stats:
-            if s.get("name") == name or s.get("shortDisplayName") == name:
-                return int(s.get("value", 0) or 0)
-        return 0
-
-    team_names = []
     for i, entry in enumerate(entries, 1):
         team  = entry.get("team", {})
         name  = team.get("displayName") or team.get("name") or "?"
@@ -769,18 +798,56 @@ def _build_group_embed(letter: str, standing: dict) -> discord.Embed:
         ga    = _stat(stats, "pointsAgainst")
         pts   = _stat(stats, "points")
         gd    = gf - ga
-        team_names.append(f"{_flag(name)} {name}")
+        # Flag emoji are double-width in most clients but count as a
+        # handful of chars here; truncate name field to keep alignment sane.
+        label = f"{_flag(name)} {name}"[: name_width]
         lines.append(
-            f"{i:<2} {name[:21]:<22} {p:>2} {w:>2} {d:>2} {lo:>2} {gf:>3} {ga:>3} {gd:>+4} {pts:>4}"
+            f"{i:<2} {label:<{name_width}} {p:>2} {w:>2} {d:>2} {lo:>2} {gf:>3} {ga:>3} {gd:>+4} {pts:>4}"
         )
-    lines.append("```")
+    return "\n".join(lines)
+
+
+def _build_group_embed(letter: str, standing: dict) -> discord.Embed:
+    """Build a single-group standings embed (used by a!wc group <letter>)."""
+    table = _group_table_block(standing)
+    team_names = [
+        f"{_flag(e.get('team', {}).get('displayName') or e.get('team', {}).get('name') or '?')} "
+        f"{e.get('team', {}).get('displayName') or e.get('team', {}).get('name') or '?'}"
+        for e in _sorted_entries(standing)
+    ]
 
     embed = discord.Embed(
         title=f"📊 World Cup 2026 — Group {letter}",
-        description="\n".join(lines),
+        description=f"```\n{table}\n```",
         color=discord.Color.blue(),
     )
     embed.set_footer(text="  ·  ".join(team_names))
+    return embed
+
+
+def _build_groups_page_embed(
+    groups: list[dict], page_num: int, total_pages: int
+) -> discord.Embed:
+    """
+    Build one embed containing MULTIPLE groups' standings tables — used by
+    a!wc groups so the whole tournament can be browsed in a few pages
+    instead of one button click per group.
+    """
+    embed = discord.Embed(
+        title="📊 World Cup 2026 — Group Standings",
+        color=discord.Color.blue(),
+    )
+    for s in groups:
+        name  = s.get("name", "Group ?")
+        # "Group A" -> "A"
+        letter = name.split()[-1].upper() if name else "?"
+        table  = _group_table_block(s, name_width=18)
+        embed.add_field(
+            name=f"Group {letter}",
+            value=f"```\n{table}\n```",
+            inline=False,
+        )
+    embed.set_footer(text=f"Page {page_num}/{total_pages}  •  Powered by ESPN")
     return embed
 
 
