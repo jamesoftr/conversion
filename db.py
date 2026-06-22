@@ -941,3 +941,230 @@ async def get_loan_summary(guild_id: int, user_id: int) -> dict:
         "loans_given":      lc,
         "loans_received":   bc,
     }
+"""
+db_additions.py
+═══════════════
+Paste these functions into the BOTTOM of your existing db.py.
+Nothing in the existing file is changed or removed.
+
+New functions added
+───────────────────
+  reset_user_data          — wipe one user's catches + box_openings for a guild
+  get_server_stats         — aggregated totals across all users, today
+  get_server_stats_alltime — aggregated totals across all users, all time
+  get_box_leaderboard      — top users by boxes_opened, today
+  get_box_leaderboard_alltime — top users by boxes_opened, all time
+  purge_old_flees          — delete flee docs older than N days (background task)
+
+TTL / cleanup note
+──────────────────
+  Fled data is purged automatically every UTC midnight via a discord.ext.tasks
+  loop defined in tracker_cog.py.  No TTL index is used so no other collection
+  is ever touched by the purge.
+"""
+
+# ── Per-user data reset ───────────────────────────────────────────────────────
+
+async def reset_user_data(guild_id: int, user_id: int) -> dict:
+    """
+    Permanently delete ALL catch and box-opening records for one user in a guild.
+    Returns {"catches": int, "box_openings": int} with deleted counts.
+
+    Dedup caches (catch_seen_messages, box_seen_messages) are intentionally
+    NOT cleared — they are purely idempotency guards and clearing them would
+    risk double-recording old messages if they are later re-processed.
+    """
+    db = get_db()
+    catch_result = await db.catches.delete_many(
+        {"guild_id": guild_id, "user_id": user_id}
+    )
+    box_result = await db.box_openings.delete_many(
+        {"guild_id": guild_id, "user_id": user_id}
+    )
+    return {
+        "catches":      catch_result.deleted_count,
+        "box_openings": box_result.deleted_count,
+    }
+
+
+# ── Server-wide aggregated stats ──────────────────────────────────────────────
+
+async def get_server_stats(guild_id: int) -> dict:
+    """
+    Aggregate catch + box stats across ALL users for today (UTC date bucket).
+    Returns a flat dict with every counter needed for the server stats embed.
+    """
+    db       = get_db()
+    date_str = today_label()
+
+    # ── Catches ───────────────────────────────────────────────────────────────
+    catch_pipeline = [
+        {"$match": {"guild_id": guild_id, "date": date_str}},
+        {"$group": {
+            "_id":         None,
+            "total":       {"$sum": 1},
+            "shiny":       {"$sum": {"$cond": ["$shiny",       1, 0]}},
+            "gigantamax":  {"$sum": {"$cond": ["$gigantamax",  1, 0]}},
+            "chain_shiny": {"$sum": {"$cond": ["$chain_shiny", 1, 0]}},
+        }},
+    ]
+    catch_res = await db.catches.aggregate(catch_pipeline).to_list(1)
+    c = catch_res[0] if catch_res else {}
+
+    # ── Box openings ──────────────────────────────────────────────────────────
+    box_pipeline = [
+        {"$match": {"guild_id": guild_id, "date": date_str}},
+        {"$group": {
+            "_id":          None,
+            "boxes_opened":  {"$sum": "$boxes_opened"},
+            "total_pokemon": {"$sum": "$total_pokemon"},
+            "total_coins":   {"$sum": "$total_coins"},
+            "total_shards":  {"$sum": "$total_shards"},
+            "total_redeems": {"$sum": "$total_redeems"},
+            "total_shinies": {"$sum": {"$size": {"$ifNull": ["$shinies", []]}}},
+        }},
+    ]
+    box_res = await db.box_openings.aggregate(box_pipeline).to_list(1)
+    b = box_res[0] if box_res else {}
+
+    return {
+        # catches
+        "catches":      c.get("total",       0),
+        "shiny":        c.get("shiny",        0),
+        "gigantamax":   c.get("gigantamax",   0),
+        "chain_shiny":  c.get("chain_shiny",  0),
+        # box
+        "boxes_opened":  b.get("boxes_opened",  0),
+        "total_pokemon": b.get("total_pokemon", 0),
+        "total_coins":   b.get("total_coins",   0),
+        "total_shards":  b.get("total_shards",  0),
+        "total_redeems": b.get("total_redeems", 0),
+        "box_shinies":   b.get("total_shinies", 0),
+    }
+
+
+async def get_server_stats_alltime(guild_id: int) -> dict:
+    """
+    Aggregate catch + box stats across ALL users — no time filter.
+    Same shape as get_server_stats().
+    """
+    db = get_db()
+
+    catch_pipeline = [
+        {"$match": {"guild_id": guild_id}},
+        {"$group": {
+            "_id":         None,
+            "total":       {"$sum": 1},
+            "shiny":       {"$sum": {"$cond": ["$shiny",       1, 0]}},
+            "gigantamax":  {"$sum": {"$cond": ["$gigantamax",  1, 0]}},
+            "chain_shiny": {"$sum": {"$cond": ["$chain_shiny", 1, 0]}},
+        }},
+    ]
+    catch_res = await db.catches.aggregate(catch_pipeline).to_list(1)
+    c = catch_res[0] if catch_res else {}
+
+    box_pipeline = [
+        {"$match": {"guild_id": guild_id}},
+        {"$group": {
+            "_id":           None,
+            "boxes_opened":  {"$sum": "$boxes_opened"},
+            "total_pokemon": {"$sum": "$total_pokemon"},
+            "total_coins":   {"$sum": "$total_coins"},
+            "total_shards":  {"$sum": "$total_shards"},
+            "total_redeems": {"$sum": "$total_redeems"},
+            "total_shinies": {"$sum": {"$size": {"$ifNull": ["$shinies", []]}}},
+        }},
+    ]
+    box_res = await db.box_openings.aggregate(box_pipeline).to_list(1)
+    b = box_res[0] if box_res else {}
+
+    return {
+        "catches":      c.get("total",       0),
+        "shiny":        c.get("shiny",        0),
+        "gigantamax":   c.get("gigantamax",   0),
+        "chain_shiny":  c.get("chain_shiny",  0),
+        "boxes_opened":  b.get("boxes_opened",  0),
+        "total_pokemon": b.get("total_pokemon", 0),
+        "total_coins":   b.get("total_coins",   0),
+        "total_shards":  b.get("total_shards",  0),
+        "total_redeems": b.get("total_redeems", 0),
+        "box_shinies":   b.get("total_shinies", 0),
+    }
+
+
+# ── Box leaderboard ───────────────────────────────────────────────────────────
+
+async def get_box_leaderboard(guild_id: int, limit: int = 10) -> list[dict]:
+    """
+    Top users ranked by boxes_opened today (UTC date bucket).
+    Returns [{"user_id": int, "boxes_opened": int, "total_pokemon": int,
+              "total_shinies": int}, ...]
+    """
+    db       = get_db()
+    date_str = today_label()
+    pipeline = [
+        {"$match": {"guild_id": guild_id, "date": date_str}},
+        {"$group": {
+            "_id":           "$user_id",
+            "boxes_opened":  {"$sum": "$boxes_opened"},
+            "total_pokemon": {"$sum": "$total_pokemon"},
+            "total_shinies": {"$sum": {"$size": {"$ifNull": ["$shinies", []]}}},
+        }},
+        {"$sort":  {"boxes_opened": -1}},
+        {"$limit": limit},
+    ]
+    docs = await db.box_openings.aggregate(pipeline).to_list(limit)
+    return [
+        {
+            "user_id":       d["_id"],
+            "total":         d["boxes_opened"],   # "total" key keeps leaderboard renderer happy
+            "boxes_opened":  d["boxes_opened"],
+            "total_pokemon": d["total_pokemon"],
+            "total_shinies": d["total_shinies"],
+        }
+        for d in docs
+    ]
+
+
+async def get_box_leaderboard_alltime(guild_id: int, limit: int = 10) -> list[dict]:
+    """
+    Top users ranked by boxes_opened across all time.
+    Same shape as get_box_leaderboard().
+    """
+    db = get_db()
+    pipeline = [
+        {"$match": {"guild_id": guild_id}},
+        {"$group": {
+            "_id":           "$user_id",
+            "boxes_opened":  {"$sum": "$boxes_opened"},
+            "total_pokemon": {"$sum": "$total_pokemon"},
+            "total_shinies": {"$sum": {"$size": {"$ifNull": ["$shinies", []]}}},
+        }},
+        {"$sort":  {"boxes_opened": -1}},
+        {"$limit": limit},
+    ]
+    docs = await db.box_openings.aggregate(pipeline).to_list(limit)
+    return [
+        {
+            "user_id":       d["_id"],
+            "total":         d["boxes_opened"],
+            "boxes_opened":  d["boxes_opened"],
+            "total_pokemon": d["total_pokemon"],
+            "total_shinies": d["total_shinies"],
+        }
+        for d in docs
+    ]
+
+
+# ── Fled data cleanup (called nightly by tracker_cog task) ───────────────────
+
+async def purge_old_flees(days: int = 7) -> int:
+    """
+    Delete flee documents older than `days` days.
+    Only the `flees` collection is touched — no other data is affected.
+    Returns the number of documents deleted.
+    """
+    from datetime import timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    result = await get_db().flees.delete_many({"timestamp": {"$lt": cutoff}})
+    return result.deleted_count
