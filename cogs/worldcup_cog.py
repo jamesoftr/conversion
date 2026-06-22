@@ -773,12 +773,18 @@ def _group_table_block(standing: dict, name_width: int = 22) -> str:
 
         #  Team                    P  W  D  L  GF  GA   GD  Pts
         ─────────────────────────────────────────────────
-        1  🇲🇽 Mexico               2  2  0  0   5   1   +4    6
+        1  Mexico                  2  2  0  0   5   1   +4    6
         ...
 
     Shared by both the single-group view (a!wc group <letter>) and the
     multi-group-per-page view (a!wc groups), so the column layout only
     needs to be defined in one place.
+
+    NOTE: deliberately plain text, no flag emoji. Flag glyphs (especially
+    regional-indicator pairs like England/Scotland/Wales) render at
+    inconsistent widths across clients/fonts, which throws off monospace
+    column alignment — rows drift depending on which flags appear. Flags
+    are still used elsewhere (titles, footers) where alignment doesn't matter.
     """
     entries = _sorted_entries(standing)
 
@@ -798,9 +804,7 @@ def _group_table_block(standing: dict, name_width: int = 22) -> str:
         ga    = _stat(stats, "pointsAgainst")
         pts   = _stat(stats, "points")
         gd    = gf - ga
-        # Flag emoji are double-width in most clients but count as a
-        # handful of chars here; truncate name field to keep alignment sane.
-        label = f"{_flag(name)} {name}"[: name_width]
+        label = name[:name_width]
         lines.append(
             f"{i:<2} {label:<{name_width}} {p:>2} {w:>2} {d:>2} {lo:>2} {gf:>3} {ga:>3} {gd:>+4} {pts:>4}"
         )
