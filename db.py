@@ -101,6 +101,9 @@ async def ensure_indexes() -> None:
         [("message_id", 1)], unique=True
     )
 
+    # Welcome cog — one config doc per guild
+    await db.welcome_config.create_index([("guild_id", 1)], unique=True)
+
 # ── Catches ───────────────────────────────────────────────────────────────────
 
 async def mark_catch_message_seen(message_id: int) -> bool:
