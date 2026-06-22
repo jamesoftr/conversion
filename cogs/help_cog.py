@@ -4,6 +4,7 @@ cogs/help_cog.py  —  Help command.
 a!help                  — Overview page with a button for each section
 a!help tracker          — Jump straight to Tracker
 a!help leaderboard      — Jump straight to Leaderboard
+a!help serverstats      — Jump straight to Server Stats
 a!help category         — Jump straight to Category Stats
 a!help autopause        — Jump straight to Autopause
 a!help converter        — Jump straight to Converter
@@ -26,35 +27,36 @@ from discord.ext import commands
 # Data
 # ─────────────────────────────────────────────────────────────────────────────
 
-# PAGE_INDEX = 0  →  overview (generated from SECTIONS)
-# PAGE_INDEX = 1  →  SECTIONS[0]   (Tracker)
-# PAGE_INDEX = 2  →  SECTIONS[1]   (Leaderboard)
-# etc.
-# So section page index = section list index + 1
-
 SECTIONS = [
+    # ── Tracker ──────────────────────────────────────────────────────────────
     {
         "key":     "tracker",
         "title":   "📋 Tracker",
         "emoji":   "📋",
         "color":   discord.Color.gold(),
-        "summary": "Catch & flee tracking, user profiles, fled-log routing.",
+        "summary": "Unified catch & box tracking, user profiles, fled-log routing.",
         "fields": [
             (
                 "`a!profile` / `a!pf`  `[@user]`",
-                "View your catch stats (today + all-time), type breakdown, region "
-                "breakdown, and full Pokémon list. Mention a user to see theirs.\n"
-                "Profile buttons: **🔬 Type Stats**, **🗺️ Region Stats**, **📋 Pokémon Caught** (paginated).",
+                "Unified profile showing **catch stats** (today + all-time) side by side.\n"
+                "Profile buttons:\n"
+                "**📦 Box Stats** — switch to box-opening summary with day-by-day pagination\n"
+                "**🔬 Type Stats** — today's catch type breakdown\n"
+                "**🗺️ Region Stats** — today's catch region breakdown\n"
+                "**📋 Pokémon List** — paginated list with **Today / All Time** toggle\n"
+                "**🗑️ Reset Data** — wipe your own data *(or another user's if you're a mod)*\n"
+                "**🔙 Back** — return to catch stats from any sub-view",
             ),
             (
                 "`a!check`  *(Admin)*",
-                "Reply to a Pokétwo message to **manually record** a catch or flee "
-                "that the bot missed.",
+                "Reply to **any** Pokétwo message to manually record it.\n"
+                "Works for catches, flees, **and box openings** — routes automatically.",
             ),
             (
                 "`a!fled-logs <category> <#channel>`  *(Admin)*",
                 "Route fled-alerts for a category to a specific channel.\n"
-                "e.g. `a!fled-logs rares #rare-logs`",
+                "e.g. `a!fled-logs rares #rare-logs`\n"
+                "Fled records are automatically purged after **7 days** to keep the DB lean.",
             ),
             (
                 "`a!fled-logs list`  *(Admin)*",
@@ -62,35 +64,69 @@ SECTIONS = [
             ),
             (
                 "`a!cleardata`  *(Bot owner)*",
-                "Permanently delete **all** catch and flee records for this server. "
-                "Asks for confirmation first.",
+                "Permanently delete **all** data for this server (catches, boxes, flees).\n"
+                "Requires **two separate button confirmations** to prevent accidents.",
+            ),
+            (
+                "`a!cleardata @user`  /  `a!cleardata <user_id>`  *(Admin)*",
+                "Permanently delete all catches and box records for **one specific user**.\n"
+                "Requires Manage Server permission. Single button confirmation.",
             ),
         ],
     },
+
+    # ── Leaderboard ───────────────────────────────────────────────────────────
     {
         "key":     "leaderboard",
         "title":   "🏆 Leaderboard",
         "emoji":   "🏆",
         "color":   discord.Color.blurple(),
-        "summary": "Global and category catch leaderboards with time-window toggles.",
+        "summary": "Global and category leaderboards — catches, shiny, gigantamax, and boxes.",
         "fields": [
             (
                 "`a!leaderboard` / `a!lb`",
-                "Show the **global** leaderboard. Use the dropdown to switch between "
-                "Catches / Shiny / Gigantamax boards, and Today / All Time windows.",
+                "Show the leaderboard with two dropdowns:\n"
+                "**Board type** — Catches · Shiny · Gigantamax · **📦 Box Openings**\n"
+                "**Time window** — Today · All Time\n"
+                "All Time correctly reads the full history — no data is lost between sessions.",
             ),
             (
                 "`a!leaderboard <category>` / `a!lb <category>`",
                 "Show the leaderboard filtered to a specific Pokémon category.\n"
                 "e.g. `a!lb rares`  •  `a!lb regionals`",
             ),
+            (
+                "📦 Box Openings board",
+                "Ranks users by **boxes opened**, with Pokémon unboxed and shinies shown inline.\n"
+                "Supports both Today and All Time windows.",
+            ),
         ],
     },
+
+    # ── Server Stats ──────────────────────────────────────────────────────────
+    {
+        "key":     "serverstats",
+        "title":   "🌐 Server Stats",
+        "emoji":   "🌐",
+        "color":   discord.Color.teal(),
+        "summary": "Combined server-wide totals for catches and box openings.",
+        "fields": [
+            (
+                "`a!serverstats` / `a!ss`",
+                "Show combined server-wide statistics across **all users**:\n"
+                "**Catches** — total caught, shiny, chain shiny, gigantamax\n"
+                "**Box Openings** — boxes opened, Pokémon unboxed, box shinies, coins, shards, redeems\n\n"
+                "Use the **📅 Today** / **🏅 All Time** buttons to switch time windows.",
+            ),
+        ],
+    },
+
+    # ── Category Stats ────────────────────────────────────────────────────────
     {
         "key":     "category",
         "title":   "📊 Category Stats",
         "emoji":   "📊",
-        "color":   discord.Color.teal(),
+        "color":   discord.Color.from_rgb(0, 180, 160),
         "summary": "Per-category spawn, catch, and flee statistics.",
         "fields": [
             (
@@ -101,6 +137,8 @@ SECTIONS = [
             ),
         ],
     },
+
+    # ── Autopause ─────────────────────────────────────────────────────────────
     {
         "key":     "autopause",
         "title":   "🔒 Autopause",
@@ -156,6 +194,8 @@ SECTIONS = [
             ),
         ],
     },
+
+    # ── Converter ─────────────────────────────────────────────────────────────
     {
         "key":     "converter",
         "title":   "🔄 Converter",
@@ -195,6 +235,8 @@ SECTIONS = [
             ),
         ],
     },
+
+    # ── Loans ─────────────────────────────────────────────────────────────────
     {
         "key":     "loans",
         "title":   "💰 Loans",
@@ -244,6 +286,8 @@ SECTIONS = [
             ),
         ],
     },
+
+    # ── Element Quiz ──────────────────────────────────────────────────────────
     {
         "key":     "quiz",
         "title":   "🧪 Element Quiz",
@@ -297,6 +341,8 @@ SECTIONS = [
             ),
         ],
     },
+
+    # ── Calculator ────────────────────────────────────────────────────────────
     {
         "key":     "calc",
         "title":   "🧮 Calculator",
@@ -325,19 +371,27 @@ _KEY_TO_PAGE: dict[str, int] = {s["key"]: i + 1 for i, s in enumerate(SECTIONS)}
 
 # Extra aliases that map to existing keys
 _ALIASES: dict[str, str] = {
-    "lb":          "leaderboard",
+    "lb":           "leaderboard",
     "leaderboards": "leaderboard",
-    "cs":          "category",
-    "catstat":     "category",
-    "ap":          "autopause",
-    "convert":     "converter",
-    "loan":        "loans",
-    "element":     "quiz",
-    "elements":    "quiz",
-    "calculator":  "calc",
-    "math":        "calc",
-    "pf":          "tracker",
-    "profile":     "tracker",
+    "boxes":        "leaderboard",
+    "box":          "leaderboard",
+    "ss":           "serverstats",
+    "server":       "serverstats",
+    "serverstat":   "serverstats",
+    "cs":           "category",
+    "catstat":      "category",
+    "ap":           "autopause",
+    "convert":      "converter",
+    "loan":         "loans",
+    "element":      "quiz",
+    "elements":     "quiz",
+    "calculator":   "calc",
+    "math":         "calc",
+    "pf":           "tracker",
+    "profile":      "tracker",
+    "check":        "tracker",
+    "cleardata":    "tracker",
+    "fled":         "tracker",
 }
 
 
@@ -360,7 +414,7 @@ def _overview_embed() -> discord.Embed:
             value=sec["summary"],
             inline=False,
         )
-    e.set_footer(text="Prefix: a!  or  !")
+    e.set_footer(text="Prefix: a!  •  Fled data auto-purged after 7 days")
     return e
 
 
@@ -375,7 +429,7 @@ def _section_embed(sec: dict, page_num: int) -> discord.Embed:
     e.set_footer(
         text=(
             f"Section {page_num}/{len(SECTIONS)}  •  "
-            "Prefix: a!  or  !  •  "
+            "Prefix: a!  •  "
             "a!help <section> to jump directly"
         )
     )
@@ -501,9 +555,10 @@ class HelpCog(commands.Cog):
         Show all bot commands.
 
         a!help                  — overview with section buttons
-        a!help tracker          — Tracker commands
+        a!help tracker          — Tracker & profile commands
         a!help leaderboard      — Leaderboard commands
-        a!help category         — Category Stats commands
+        a!help serverstats      — Server-wide stats
+        a!help category         — Category stats commands
         a!help autopause        — Autopause commands
         a!help converter        — Converter commands
         a!help loans            — Loan tracker commands
@@ -514,14 +569,9 @@ class HelpCog(commands.Cog):
 
         if section:
             key = section.strip().lower()
-
-            # Resolve alias first
             key = _ALIASES.get(key, key)
-
-            # Exact key match
             page = _KEY_TO_PAGE.get(key)
 
-            # Fuzzy: check if the query appears in any key or title word
             if page is None:
                 match = next(
                     (s for s in SECTIONS
@@ -535,7 +585,8 @@ class HelpCog(commands.Cog):
                 names = list(_KEY_TO_PAGE.keys())
                 await ctx.reply(
                     f"❌ Unknown section `{section}`.\n"
-                    f"Available: `{'`, `'.join(names)}`"
+                    f"Available: `{'`, `'.join(names)}`",
+                    mention_author=False,
                 )
                 return
 
