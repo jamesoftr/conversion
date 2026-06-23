@@ -712,16 +712,17 @@ class LoansCog(commands.Cog):
         embed.add_field(
             name="Creating Loans",
             value=(
-                "`a!loan give @user <amount> [pc|pokecoins] [--rate N] [--type flat|compound] [--due YYYY-MM-DD] [--note text]`\n"
-                "`a!loan mgive @user` — open a **modal** to fill in details"
+                "`a!loan give @user` — opens a **modal form** (recommended)\n"
+                "`a!loan give <user_id>` — same, using a raw Discord ID\n"
+                "`a!loan give @user <amount> [pc|pokecoins] [--rate N] [--type flat|compound] [--due YYYY-MM-DD] [--note text]` — classic one-liner"
             ),
             inline=False,
         )
         embed.add_field(
             name="Managing Loans",
             value=(
-                "`a!loan pay <ID> <amount> [--note text]` — record payment (classic)\n"
-                "`a!loan mpay <ID>` — record payment via **modal** (with proof + date)\n"
+                "`a!loan pay <ID>` — opens a **modal** (amount + proof + date + note)\n"
+                "`a!loan pay <ID> <amount> [--note text]` — classic quick payment\n"
                 "`a!loan proof <ID>` — attach proof via **modal**\n"
                 "`a!loan cancel <ID>` — cancel a loan\n"
                 "`a!loan info <ID>` — full details + action buttons"
@@ -747,14 +748,51 @@ class LoansCog(commands.Cog):
         )
         await ctx.reply(embed=embed, mention_author=False)
 
-    # ── a!loan give (classic) ─────────────────────────────────────────────────
+    # ── a!loan give — modal button OR classic inline args ─────────────────────
+    #
+    #   a!loan give @User              → sends a button that opens the full modal
+    #   a!loan give <user_id>          → same, resolves the ID to a member first
+    #   a!loan give @User 5000 pc ...  → classic inline args, no modal needed
+    #
+    # The modal path is the recommended default; classic args still work for
+    # power-users who want a one-liner.
 
     @loan.command(name="give")
-    async def loan_give(self, ctx: commands.Context, borrower: discord.Member, *, args: str = ""):
+    async def loan_give(self, ctx: commands.Context, borrower_arg: str, *, args: str = ""):
         """
-        Issue a loan (classic inline args).
-        Example: a!loan give @User 5000 pc --rate 5 --type flat --due 2025-09-01
+        Issue a loan.
+        • a!loan give @User / <id>          → opens a modal form (button)
+        • a!loan give @User <amount> [opts] → classic inline mode
         """
+        # ── Resolve borrower (mention OR raw ID) ──────────────────────────────
+        borrower: discord.Member | None = None
+
+        # Try discord.py's converter first (handles <@id> mentions)
+        try:
+            converter = commands.MemberConverter()
+            borrower  = await converter.convert(ctx, borrower_arg)
+        except commands.BadArgument:
+            pass
+
+        # Fall back to raw integer ID
+        if borrower is None:
+            raw = re.sub(r"[<@!>]", "", borrower_arg)
+            if raw.isdigit():
+                borrower = ctx.guild.get_member(int(raw))
+                if borrower is None:
+                    try:
+                        borrower = await ctx.guild.fetch_member(int(raw))
+                    except discord.NotFound:
+                        pass
+
+        if borrower is None:
+            await ctx.reply(
+                f"❌ Could not find a member matching `{borrower_arg}`. "
+                "Use a mention or a valid user ID.",
+                mention_author=False,
+            )
+            return
+
         if borrower.bot:
             await ctx.reply("❌ You can't loan to a bot.", mention_author=False)
             return
@@ -762,6 +800,19 @@ class LoansCog(commands.Cog):
             await ctx.reply("❌ You can't loan to yourself.", mention_author=False)
             return
 
+        # ── No inline args → open modal via button ────────────────────────────
+        if not args.strip():
+            modal = LoanGiveModal(borrower)
+            view  = _ModalTriggerView(ctx.author.id, modal, label="📝 Open Loan Form")
+            await ctx.reply(
+                f"Click the button below to fill in the loan form for "
+                f"**{borrower.display_name}**:",
+                view=view,
+                mention_author=False,
+            )
+            return
+
+        # ── Inline args → classic path ────────────────────────────────────────
         try:
             parsed = _parse_give_args(args.strip())
         except ValueError as exc:
@@ -785,32 +836,56 @@ class LoansCog(commands.Cog):
         embed.set_author(name="✅ Loan Created")
         await ctx.reply(embed=embed, mention_author=False)
 
-    # ── a!loan mgive (modal) ──────────────────────────────────────────────────
+    # ── a!loan mgive (modal) — kept as alias for backwards compat ─────────────
 
     @loan.command(name="mgive")
     async def loan_mgive(self, ctx: commands.Context, borrower: discord.Member):
-        """Open a modal to create a loan for @user."""
-        if borrower.bot:
-            await ctx.reply("❌ You can't loan to a bot.", mention_author=False)
-            return
-        if borrower == ctx.author:
-            await ctx.reply("❌ You can't loan to yourself.", mention_author=False)
-            return
+        """Alias for `a!loan give @user` — opens the loan modal form."""
+        await ctx.invoke(self.loan_give, borrower_arg=str(borrower.id))
 
-        modal = LoanGiveModal(borrower)
-        # We can't send a modal from a prefix command directly — use a button instead
-        view  = _ModalTriggerView(ctx.author.id, modal, label="📝 Open Loan Form")
-        await ctx.reply(
-            f"Click below to open the loan form for **{borrower.display_name}**:",
-            view=view,
-            mention_author=False,
-        )
-
-    # ── a!loan pay (classic) ──────────────────────────────────────────────────
+    # ── a!loan pay — modal button OR classic inline ───────────────────────────
+    #
+    #   a!loan pay <loan_id>              → sends a button that opens the pay modal
+    #   a!loan pay <loan_id> <amount>     → classic inline, records immediately
+    #
+    # The modal includes amount, proof URL, paid date, and note fields.
+    # Classic mode only sets amount + optional --note for quick one-liners.
 
     @loan.command(name="pay")
-    async def loan_pay(self, ctx: commands.Context, loan_id: str, amount: str, *, args: str = ""):
-        """Record a repayment. Example: a!loan pay L-00001 2500 --note 'half payment'"""
+    async def loan_pay(self, ctx: commands.Context, loan_id: str, amount: str = "", *, args: str = ""):
+        """
+        Record a repayment.
+        • a!loan pay <ID>              → opens a modal (amount + proof + date + note)
+        • a!loan pay <ID> <amount>     → classic inline mode
+        """
+        loan_id  = loan_id.upper()
+        loan_doc = await db.get_loan(loan_id)
+        if not loan_doc:
+            await ctx.reply(f"❌ Loan `{loan_id}` not found.", mention_author=False)
+            return
+
+        is_involved = ctx.author.id in (loan_doc["lender_id"], loan_doc["borrower_id"])
+        is_mod      = ctx.author.guild_permissions.manage_guild
+        if not (is_involved or is_mod):
+            await ctx.reply("❌ Only the lender or borrower can record payments.", mention_author=False)
+            return
+
+        if loan_doc["status"] in ("paid", "cancelled"):
+            await ctx.reply(f"❌ This loan is already **{loan_doc['status']}**.", mention_author=False)
+            return
+
+        # ── No amount → open modal via button ─────────────────────────────────
+        if not amount.strip():
+            modal = LoanPayModal(loan_id)
+            view  = _ModalTriggerView(ctx.author.id, modal, label="💸 Record Payment")
+            await ctx.reply(
+                f"Click the button below to record a payment for **{loan_id}**:",
+                view=view,
+                mention_author=False,
+            )
+            return
+
+        # ── Amount provided → classic inline path ─────────────────────────────
         try:
             pay_amount = float(amount.replace(",", ""))
             if pay_amount <= 0:
@@ -824,50 +899,17 @@ class LoansCog(commands.Cog):
         if m:
             note = m.group(1).strip().strip("\"'")
 
-        loan_doc = await db.get_loan(loan_id.upper())
-        if not loan_doc:
-            await ctx.reply(f"❌ Loan `{loan_id}` not found.", mention_author=False)
-            return
-
-        is_involved = ctx.author.id in (loan_doc["lender_id"], loan_doc["borrower_id"])
-        is_mod      = ctx.author.guild_permissions.manage_guild
-        if not (is_involved or is_mod):
-            await ctx.reply("❌ Only the lender or borrower can record payments.", mention_author=False)
-            return
-
-        if loan_doc["status"] in ("paid", "cancelled"):
-            await ctx.reply(f"❌ This loan is already **{loan_doc['status']}**.", mention_author=False)
-            return
-
-        updated = await db.record_payment(loan_id.upper(), pay_amount, note=note)
+        updated = await db.record_payment(loan_id, pay_amount, note=note)
         embed   = _loan_embed(updated, ctx.guild)
         embed.set_author(name="💸 Payment Recorded")
         await ctx.reply(embed=embed, mention_author=False)
 
-    # ── a!loan mpay (modal) ───────────────────────────────────────────────────
+    # ── a!loan mpay (modal) — kept as alias for backwards compat ─────────────
 
     @loan.command(name="mpay")
     async def loan_mpay(self, ctx: commands.Context, loan_id: str):
-        """Record a payment via modal (supports proof URL + paid date)."""
-        loan_id = loan_id.upper()
-        loan_doc = await db.get_loan(loan_id)
-        if not loan_doc:
-            await ctx.reply(f"❌ Loan `{loan_id}` not found.", mention_author=False)
-            return
-
-        if loan_doc["status"] in ("paid", "cancelled"):
-            await ctx.reply(f"❌ This loan is already **{loan_doc['status']}**.", mention_author=False)
-            return
-
-        is_involved = ctx.author.id in (loan_doc["lender_id"], loan_doc["borrower_id"])
-        is_mod      = ctx.author.guild_permissions.manage_guild
-        if not (is_involved or is_mod):
-            await ctx.reply("❌ Only the lender or borrower can record payments.", mention_author=False)
-            return
-
-        modal = LoanPayModal(loan_id)
-        view  = _ModalTriggerView(ctx.author.id, modal, label="💸 Record Payment")
-        await ctx.reply(f"Click below to record payment for **{loan_id}**:", view=view, mention_author=False)
+        """Alias for `a!loan pay <id>` — opens the payment modal."""
+        await ctx.invoke(self.loan_pay, loan_id=loan_id)
 
     # ── a!loan cancel ─────────────────────────────────────────────────────────
 
