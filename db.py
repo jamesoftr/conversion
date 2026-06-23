@@ -906,15 +906,24 @@ async def get_loan_summary(guild_id: int, user_id: int) -> dict:
 
     active_statuses = {"$in": ["active", "partial"]}
 
-    # Active lent
+    # Active lent — sum remaining balance (amount_due - amount_paid) so partial
+    # repayments are reflected and paid/cancelled loans are excluded by the status filter.
     pipeline_lent_active = [
         {"$match": {"guild_id": guild_id, "lender_id": user_id, "status": active_statuses}},
-        {"$group": {"_id": None, "total": {"$sum": "$principal"}, "count": {"$sum": 1}}},
+        {"$group": {
+            "_id":   None,
+            "total": {"$sum": {"$subtract": ["$amount_due", "$amount_paid"]}},
+            "count": {"$sum": 1},
+        }},
     ]
     # Active borrowed
     pipeline_borrowed_active = [
         {"$match": {"guild_id": guild_id, "borrower_id": user_id, "status": active_statuses}},
-        {"$group": {"_id": None, "total": {"$sum": "$principal"}, "count": {"$sum": 1}}},
+        {"$group": {
+            "_id":   None,
+            "total": {"$sum": {"$subtract": ["$amount_due", "$amount_paid"]}},
+            "count": {"$sum": 1},
+        }},
     ]
     # All-time lent
     pipeline_lent_all = [
