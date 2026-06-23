@@ -18,7 +18,7 @@ Commands  (prefix a!)
 ─────────────────────
   a!loan give  @user <amount> [pc|pokecoins] [--rate N] [--type flat|compound]
                [--due YYYY-MM-DD] [--proof <url>] [--note "text"]
-  a!loan mgive @user              ← opens a modal to fill in all details
+  a!loan mgive @user              ← opens a modal (issue date | due date field)
   a!loan pay   <LOAN-ID> <amount> [--note "text"]
   a!loan cancel <LOAN-ID>
   a!loan info   <LOAN-ID>
@@ -319,11 +319,11 @@ class LoanGiveModal(discord.ui.Modal, title="Give a Loan"):
         required=False,
         max_length=40,
     )
-    due_date = discord.ui.TextInput(
-        label="Due Date (YYYY-MM-DD, optional)",
-        placeholder="2025-12-31",
+    dates = discord.ui.TextInput(
+        label="Issue Date | Due Date (optional)",
+        placeholder="e.g.  2025-06-01 | 2025-12-31   or just  | 2025-12-31",
         required=False,
-        max_length=10,
+        max_length=25,
     )
     note = discord.ui.TextInput(
         label="Note (optional)",
@@ -378,17 +378,32 @@ class LoanGiveModal(discord.ui.Modal, title="Give a Loan"):
             elif interest_rate > 0:
                 interest_type = "flat"
 
-        # Due date
-        due_date = None
-        raw_due  = (self.due_date.value or "").strip()
-        if raw_due:
-            try:
-                due_date = datetime.strptime(raw_due, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            except ValueError:
-                await interaction.response.send_message(
-                    "❌ Due date must be `YYYY-MM-DD`.", ephemeral=True
-                )
-                return
+        # Issue date | Due date  — split on "|"
+        issue_date = None
+        due_date   = None
+        raw_dates  = (self.dates.value or "").strip()
+        if raw_dates:
+            parts = [p.strip() for p in raw_dates.split("|", 1)]
+            raw_issue = parts[0]
+            raw_due   = parts[1] if len(parts) > 1 else ""
+
+            if raw_issue:
+                try:
+                    issue_date = datetime.strptime(raw_issue, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                except ValueError:
+                    await interaction.response.send_message(
+                        "❌ Issue date must be `YYYY-MM-DD` (left of the `|`).", ephemeral=True
+                    )
+                    return
+
+            if raw_due:
+                try:
+                    due_date = datetime.strptime(raw_due, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                except ValueError:
+                    await interaction.response.send_message(
+                        "❌ Due date must be `YYYY-MM-DD` (right of the `|`).", ephemeral=True
+                    )
+                    return
 
         proof_url = (self.proof_url.value or "").strip() or None
         note      = (self.note.value or "").strip() or None
@@ -406,7 +421,7 @@ class LoanGiveModal(discord.ui.Modal, title="Give a Loan"):
             due_date      = due_date,
             proof_url     = proof_url,
             note          = note,
-            created_at    = None,  # always use current time from modal
+            created_at    = issue_date,  # None = use current time; set if user provided issue date
         )
 
         embed = _loan_embed(loan_doc, interaction.guild)
