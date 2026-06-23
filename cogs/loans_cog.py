@@ -299,30 +299,25 @@ def _parse_give_args(raw: str) -> dict:
 # ── Modals ─────────────────────────────────────────────────────────────────────
 
 class LoanGiveModal(discord.ui.Modal, title="Give a Loan"):
+    # Discord hard limit: 5 components per modal.
+    # Currency defaults to "pc"; grant date defaults to now.
     amount = discord.ui.TextInput(
         label="Amount",
         placeholder="e.g. 5000",
         required=True,
         max_length=20,
     )
-    currency = discord.ui.TextInput(
-        label="Currency (pc / pokecoins)",
-        placeholder="pc",
+    proof_url = discord.ui.TextInput(
+        label="Proof Link (optional)",
+        placeholder="https://discord.com/channels/...",
         required=False,
-        max_length=20,
-        default="pc",
+        max_length=500,
     )
     interest = discord.ui.TextInput(
-        label="Interest Rate % (0 = none) and type flat/compound",
+        label="Interest — rate% type (optional)",
         placeholder="e.g.  5 flat   or   1 compound   or leave blank",
         required=False,
         max_length=40,
-    )
-    grant_date = discord.ui.TextInput(
-        label="Grant Date (YYYY-MM-DD, optional)",
-        placeholder="Leave blank to use today",
-        required=False,
-        max_length=10,
     )
     due_date = discord.ui.TextInput(
         label="Due Date (YYYY-MM-DD, optional)",
@@ -354,14 +349,8 @@ class LoanGiveModal(discord.ui.Modal, title="Give a Loan"):
             )
             return
 
-        # Currency
-        cur_raw  = (self.currency.value or "pc").strip().lower()
-        currency = CURRENCY_ALIASES.get(cur_raw)
-        if not currency:
-            await interaction.response.send_message(
-                f"❌ Unknown currency `{cur_raw}`. Use `pc` or `pokecoins`.", ephemeral=True
-            )
-            return
+        # Currency — always "pc" in modal (use classic args for pokecoins)
+        currency = "pc"
 
         # Interest  — parse "5 flat" / "1 compound" / "5" / ""
         interest_rate = 0.0
@@ -389,18 +378,6 @@ class LoanGiveModal(discord.ui.Modal, title="Give a Loan"):
             elif interest_rate > 0:
                 interest_type = "flat"
 
-        # Grant date (when the loan was actually issued — defaults to now)
-        grant_date = None
-        raw_grant  = (self.grant_date.value or "").strip()
-        if raw_grant:
-            try:
-                grant_date = datetime.strptime(raw_grant, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            except ValueError:
-                await interaction.response.send_message(
-                    "❌ Grant date must be `YYYY-MM-DD`.", ephemeral=True
-                )
-                return
-
         # Due date
         due_date = None
         raw_due  = (self.due_date.value or "").strip()
@@ -413,7 +390,8 @@ class LoanGiveModal(discord.ui.Modal, title="Give a Loan"):
                 )
                 return
 
-        note = (self.note.value or "").strip() or None
+        proof_url = (self.proof_url.value or "").strip() or None
+        note      = (self.note.value or "").strip() or None
 
         await interaction.response.defer()
 
@@ -426,9 +404,9 @@ class LoanGiveModal(discord.ui.Modal, title="Give a Loan"):
             interest_rate = interest_rate,
             interest_type = interest_type,
             due_date      = due_date,
-            proof_url     = None,
+            proof_url     = proof_url,
             note          = note,
-            created_at    = grant_date,  # None = use current time (default)
+            created_at    = None,  # always use current time from modal
         )
 
         embed = _loan_embed(loan_doc, interaction.guild)
