@@ -629,12 +629,13 @@ async def create_loan(
     due_date:      "datetime | None" = None,
     proof_url:     str   = None,
     note:          str   = None,
+    created_at:    "datetime | None" = None,  # override grant date; defaults to now
 ) -> dict:
     """Insert a new loan and return the full document."""
     db      = get_db()
     loan_id = await _next_loan_id(guild_id)
     amount_due = _compute_amount_due(principal, interest_rate, interest_type)
-    now = datetime.now(timezone.utc)
+    now = created_at if created_at is not None else datetime.now(timezone.utc)
 
     doc = {
         "loan_id":       loan_id,
