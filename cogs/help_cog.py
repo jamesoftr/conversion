@@ -245,17 +245,33 @@ SECTIONS = [
         "summary": "PokéCoin / PC loan tracker with interest, repayments, and overdue alerts.",
         "fields": [
             (
-                "`a!loan give @user <amount> [pc|pokecoins]`",
-                "Issue a new loan to a user. Optional flags:\n"
-                "`--rate <n>` — interest rate (percent)  •  `--type flat|compound` — interest type\n"
-                "`--due YYYY-MM-DD` — due date  •  `--proof <url>` — proof link\n"
-                "`--note \"text\"` — attach a note\n"
+                "`a!loan give @user`  *(modal — recommended)*",
+                "Opens a **modal form** to create a loan. Fields:\n"
+                "• **Amount** — loan principal\n"
+                "• **Interest** — e.g. `5 flat` or `1 compound` (optional)\n"
+                "• **Issue Date | Due Date** — `YYYY-MM-DD | YYYY-MM-DD`; both optional.\n"
+                "  Leave issue date blank to use today: `| 2025-12-31`\n"
+                "• **Proof Link** — optional URL\n"
+                "• **Note** — optional free text",
+            ),
+            (
+                "`a!loan give @user <amount> [pc|pokecoins]`  *(classic)*",
+                "One-liner loan creation. Optional flags:\n"
+                "`--rate <n>` — interest rate (percent)  •  `--type flat|compound`\n"
+                "`--due YYYY-MM-DD` — due date  •  `--proof <url>`  •  `--note \"text\"`\n"
                 "e.g. `a!loan give @ash 500 pc --rate 5 --type compound --due 2025-12-31`",
             ),
             (
-                "`a!loan pay <LOAN-ID> <amount>`",
-                "Record a (partial or full) repayment on a loan.\n"
-                "Optional: `--note \"text\"` to attach a payment note.",
+                "`a!loan pay <LOAN-ID>`  *(modal — recommended)*",
+                "Opens a **modal form** to record a repayment. Fields:\n"
+                "• **Amount Paid** — how much was repaid\n"
+                "• **Date Paid** — `YYYY-MM-DD` (optional, defaults to today)\n"
+                "• **Proof URL** — optional link\n"
+                "• **Note** — optional note (e.g. *first instalment*)",
+            ),
+            (
+                "`a!loan pay <LOAN-ID> <amount>`  *(classic)*",
+                "Quick inline payment. Optional: `--note \"text\"` to attach a note.",
             ),
             (
                 "`a!loan cancel <LOAN-ID>`",
@@ -263,12 +279,13 @@ SECTIONS = [
             ),
             (
                 "`a!loan info <LOAN-ID>`",
-                "View full loan details: amount, interest, due date, repayment history, "
-                "outstanding balance, and overdue status.",
+                "View full loan details: amount, interest, issue date, due date, repayment history, "
+                "outstanding balance, and overdue status.\n"
+                "Includes **💸 Record Payment** and **🔗 Attach Proof** action buttons.",
             ),
             (
-                "`a!loan proof <LOAN-ID> <url>`",
-                "Attach or update the proof URL on an existing loan.",
+                "`a!loan proof <LOAN-ID>`",
+                "Attach proof to a loan via modal (URL + paid date + note).",
             ),
             (
                 "`a!loan list [lent|borrowed|all]`",
@@ -282,7 +299,7 @@ SECTIONS = [
             (
                 "`a!loan summary [@user]`",
                 "Quick summary of total lent, borrowed, and outstanding amounts. "
-                "Mention a user to see their summary.",
+                "Mention a user to see their summary *(mods only for other users)*.",
             ),
         ],
     },
