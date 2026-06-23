@@ -318,6 +318,12 @@ class LoanGiveModal(discord.ui.Modal, title="Give a Loan"):
         required=False,
         max_length=40,
     )
+    grant_date = discord.ui.TextInput(
+        label="Grant Date (YYYY-MM-DD, optional)",
+        placeholder="Leave blank to use today",
+        required=False,
+        max_length=10,
+    )
     due_date = discord.ui.TextInput(
         label="Due Date (YYYY-MM-DD, optional)",
         placeholder="2025-12-31",
@@ -383,6 +389,18 @@ class LoanGiveModal(discord.ui.Modal, title="Give a Loan"):
             elif interest_rate > 0:
                 interest_type = "flat"
 
+        # Grant date (when the loan was actually issued — defaults to now)
+        grant_date = None
+        raw_grant  = (self.grant_date.value or "").strip()
+        if raw_grant:
+            try:
+                grant_date = datetime.strptime(raw_grant, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            except ValueError:
+                await interaction.response.send_message(
+                    "❌ Grant date must be `YYYY-MM-DD`.", ephemeral=True
+                )
+                return
+
         # Due date
         due_date = None
         raw_due  = (self.due_date.value or "").strip()
@@ -410,6 +428,7 @@ class LoanGiveModal(discord.ui.Modal, title="Give a Loan"):
             due_date      = due_date,
             proof_url     = None,
             note          = note,
+            created_at    = grant_date,  # None = use current time (default)
         )
 
         embed = _loan_embed(loan_doc, interaction.guild)
@@ -1048,7 +1067,7 @@ class LoansCog(commands.Cog):
           a!loan reset all       — wipe ALL loans for this server
           a!loan reset @user     — wipe one user's loans
         """
-        if ctx.author.id != self.bot.owner_id:
+        if not await self.bot.is_owner(ctx.author):
             await ctx.reply("❌ Only the bot owner can reset loans.", mention_author=False)
             return
 
