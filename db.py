@@ -1171,3 +1171,141 @@ async def purge_old_flees(days: int = 7) -> int:
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     result = await get_db().flees.delete_many({"timestamp": {"$lt": cutoff}})
     return result.deleted_count
+
+"""
+db_loans_additions.py
+═════════════════════
+Paste the functions below into db.py.
+
+Two existing functions are REPLACED (find them by name and swap them out):
+  • record_payment   — now accepts proof_url + paid_date per payment
+  • update_loan_proof — replaced by update_loan_proof_with_meta
+
+Three new functions are ADDED:
+  • update_loan_proof_with_meta
+  • reset_all_loans
+  • reset_user_loans
+"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REPLACE the existing record_payment() with this version.
+# New params: proof_url (str|None), paid_date (str|None, e.g. "2025-08-01")
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def record_payment(
+    loan_id:   str,
+    amount:    float,
+    note:      str = None,
+    proof_url: str = None,
+    paid_date: str = None,   # "YYYY-MM-DD" string supplied by user, optional
+) -> dict | None:
+    """
+    Record a partial or full repayment.
+    Automatically flips status to 'partial' or 'paid'.
+    Stores proof_url and paid_date in the payment sub-document.
+    Returns the updated loan doc, or None if not found.
+    """
+    db  = get_db()
+    now = datetime.now(timezone.utc)
+
+    loan = await get_loan(loan_id)
+    if not loan:
+        return None
+
+    new_paid = round(loan["amount_paid"] + amount, 2)
+
+    # Recalculate amount_due for compound loans
+    amount_due = loan["amount_due"]
+    if loan["interest_type"] == "compound" and loan["interest_rate"] > 0:
+        amount_due = compute_compound_due(
+            loan["principal"], loan["interest_rate"], loan["created_at"]
+        )
+
+    new_status = "paid" if new_paid >= amount_due else "partial"
+    paid_at    = now if new_status == "paid" else None
+
+    payment_entry = {
+        "amount":    amount,
+        "timestamp": now,
+        "note":      note,
+        "proof_url": proof_url,
+        "paid_date": paid_date,
+    }
+
+    updated = await db.loans.find_one_and_update(
+        {"loan_id": loan_id},
+        {
+            "$set": {
+                "amount_paid": new_paid,
+                "amount_due":  amount_due,
+                "status":      new_status,
+                "paid_at":     paid_at,
+            },
+            "$push": {"payments": payment_entry},
+        },
+        return_document=True,
+    )
+    return updated
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REPLACE the existing update_loan_proof() with this version.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def update_loan_proof_with_meta(
+    loan_id:   str,
+    proof_url: str,
+    note:      str = None,
+    paid_date: str = None,
+) -> dict | None:
+    """
+    Attach or replace the top-level proof URL on a loan.
+    Optionally also records a note and/or paid_date alongside it.
+    Returns the updated loan doc.
+    """
+    fields = {"proof_url": proof_url}
+    if note:
+        fields["proof_note"] = note
+    if paid_date:
+        fields["proof_paid_date"] = paid_date
+
+    return await get_db().loans.find_one_and_update(
+        {"loan_id": loan_id},
+        {"$set": fields},
+        return_document=True,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW — reset helpers (bot owner only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def reset_all_loans(guild_id: int) -> int:
+    """
+    Permanently delete ALL loan documents for a guild.
+    Also resets the loan ID counter so IDs restart from L-00001.
+    Returns the number of loans deleted.
+    """
+    db = get_db()
+    result = await db.loans.delete_many({"guild_id": guild_id})
+    # Reset the sequential counter so IDs restart cleanly
+    await db.loan_counters.delete_one({"guild_id": guild_id})
+    return result.deleted_count
+
+
+async def reset_user_loans(guild_id: int, user_id: int) -> int:
+    """
+    Permanently delete all loans where this user is either the lender or the
+    borrower, within the given guild.
+    Returns the number of loans deleted.
+    """
+    db = get_db()
+    result = await db.loans.delete_many({
+        "guild_id": guild_id,
+        "$or": [
+            {"lender_id":   user_id},
+            {"borrower_id": user_id},
+        ],
+    })
+    return result.deleted_count
