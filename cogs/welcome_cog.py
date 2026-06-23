@@ -43,10 +43,8 @@ FONTS_DIR = Path("fonts")
 # ── GIF URLs ──────────────────────────────────────────────────────────────────
 # Upload each GIF to any Discord channel, right-click → Copy Link,
 # then paste the cdn.discordapp.com URL below.
-WELCOME_GIF_URL = "https://cdn.discordapp.com/attachments/1518532167641206784/1518546459195084840/team-rocket.gif?ex=6a3a5019&is=6a38fe99&hm=ac2d4a4e774c6c88b9ba0b023be785a88a01cefca2c57dde0f5382eaed878d02&"   # e.g. "https://cdn.discordapp.com/attachments/.../welcome.gif"
-LEAVE_GIF_URL   = "https://cdn.discordapp.com/attachments/1518532167641206784/1518546459509788672/pokemon-fly.gif?ex=6a3a5019&is=6a38fe99&hm=3047ad9c85ff55f9f8de1590cfb7ea496f8b965b55b2145a509d234d6476c6b5&"   # e.g. "https://cdn.discordapp.com/attachments/.../leave.gif"
-
-def _font(name: str, size: int):
+WELCOME_GIF_URL = "https://cdn.discordapp.com/attachments/1518532167641206784/1518828870206488697/team-rocket_1.mp4?ex=6a3b571d&is=6a3a059d&hm=a404198bb06b74776a6bb73b443a5da69874ec447f8c2afb909882db7e4b4dd7&"   # e.g. "https://cdn.discordapp.com/attachments/.../welcome.gif"
+LEAVE_GIF_URL   = "https://cdn.discordapp.com/attachments/1518532167641206784/1518828870600626287/pokemon-fly.mp4?ex=6a3b571d&is=6a3a059d&hm=70ffd3cb1dbd8e6edf67e6ea1bf43cb8798b591d17a71f3f973a19f02c55fefd&"
     p = FONTS_DIR / name
     if PIL_OK and p.exists():
         return ImageFont.truetype(str(p), size)
