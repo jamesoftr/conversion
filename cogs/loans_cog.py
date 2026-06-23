@@ -840,8 +840,20 @@ class LoansCog(commands.Cog):
 
     @loan.command(name="mgive")
     async def loan_mgive(self, ctx: commands.Context, borrower: discord.Member):
-        """Alias for `a!loan give @user` — opens the loan modal form."""
-        await ctx.invoke(self.loan_give, borrower_arg=str(borrower.id))
+        """Open the loan modal form for @user (alias for `a!loan give @user`)."""
+        if borrower.bot:
+            await ctx.reply("❌ You can't loan to a bot.", mention_author=False)
+            return
+        if borrower == ctx.author:
+            await ctx.reply("❌ You can't loan to yourself.", mention_author=False)
+            return
+        modal = LoanGiveModal(borrower)
+        view  = _ModalTriggerView(ctx.author.id, modal, label="📝 Open Loan Form")
+        await ctx.reply(
+            f"Click the button below to fill in the loan form for **{borrower.display_name}**:",
+            view=view,
+            mention_author=False,
+        )
 
     # ── a!loan pay — modal button OR classic inline ───────────────────────────
     #
@@ -908,8 +920,27 @@ class LoansCog(commands.Cog):
 
     @loan.command(name="mpay")
     async def loan_mpay(self, ctx: commands.Context, loan_id: str):
-        """Alias for `a!loan pay <id>` — opens the payment modal."""
-        await ctx.invoke(self.loan_pay, loan_id=loan_id)
+        """Open the payment modal for a loan (alias for `a!loan pay <id>`)."""
+        loan_id  = loan_id.upper()
+        loan_doc = await db.get_loan(loan_id)
+        if not loan_doc:
+            await ctx.reply(f"❌ Loan `{loan_id}` not found.", mention_author=False)
+            return
+        if loan_doc["status"] in ("paid", "cancelled"):
+            await ctx.reply(f"❌ This loan is already **{loan_doc['status']}**.", mention_author=False)
+            return
+        is_involved = ctx.author.id in (loan_doc["lender_id"], loan_doc["borrower_id"])
+        is_mod      = ctx.author.guild_permissions.manage_guild
+        if not (is_involved or is_mod):
+            await ctx.reply("❌ Only the lender or borrower can record payments.", mention_author=False)
+            return
+        modal = LoanPayModal(loan_id)
+        view  = _ModalTriggerView(ctx.author.id, modal, label="💸 Record Payment")
+        await ctx.reply(
+            f"Click the button below to record a payment for **{loan_id}**:",
+            view=view,
+            mention_author=False,
+        )
 
     # ── a!loan cancel ─────────────────────────────────────────────────────────
 
@@ -1189,11 +1220,16 @@ class LoansCog(commands.Cog):
 # ── Helper: trigger a modal from a button (prefix command workaround) ──────────
 
 class _ModalTriggerView(discord.ui.View):
-    """A one-shot button that opens a modal. Required because modals can only be
-    sent in response to an interaction, not a plain message (prefix command)."""
+    """A button that opens a modal. Required because modals can only be
+    sent in response to an interaction, not a plain message (prefix command).
+
+    timeout=None keeps the button alive indefinitely (until bot restart).
+    Do NOT call self.stop() after send_modal — it races with Discord's ack
+    and causes 'Interaction Failed' for the user.
+    """
 
     def __init__(self, invoker_id: int, modal: discord.ui.Modal, label: str = "Open Form"):
-        super().__init__(timeout=60)
+        super().__init__(timeout=None)
         self.invoker_id = invoker_id
         self.modal      = modal
 
@@ -1206,7 +1242,6 @@ class _ModalTriggerView(discord.ui.View):
             await interaction.response.send_message("❌ Not your button.", ephemeral=True)
             return
         await interaction.response.send_modal(self.modal)
-        self.stop()
 
 
 async def setup(bot: commands.Bot):
