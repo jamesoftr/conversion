@@ -52,7 +52,7 @@ class PokétwoPrankCog(commands.Cog):
             ),
             colour=discord.Colour(0xE74C3C),
         )
-        embed.add_field(name="Reason", value="Offering crosstrading", inline=False)
+        embed.add_field(name="Reason", value="gambling/crosstrading", inline=False)
         embed.add_field(
             name="Appeals",
             value=(
