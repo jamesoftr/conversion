@@ -1,0 +1,1329 @@
+Dex,Pokemon,Chance,Chance percentage
+63,Abra,1/225,0.4449%
+304,Aron,1/225,0.4449%
+610,Axew,1/225,0.4449%
+69,Bellsprout,1/225,0.4449%
+824,Blipbug,1/225,0.4449%
+962,Bombirdier,1/225,0.4449%
+761,Bounsweet,1/225,0.4449%
+946,Bramblin,1/225,0.4449%
+951,Capsakid,1/225,0.4449%
+10,Caterpie,1/225,0.4449%
+974,Cetoddle,1/225,0.4449%
+935,Charcadet,1/225,0.4449%
+977,Dondozo,1/225,0.4449%
+885,Dreepy,1/225,0.4449%
+355,Duskull,1/225,0.4449%
+926,Fidough,1/225,0.4449%
+963,Finizen,1/225,0.4449%
+973,Flamigo,1/225,0.4449%
+661,Fletchling,1/225,0.4449%
+955,Flittle,1/225,0.4449%
+996,Frigibax,1/225,0.4449%
+92,Gastly,1/225,0.4449%
+74,Geodude,1/225,0.4449%
+999,Gimmighoul,1/225,0.4449%
+969,Glimmet,1/225,0.4449%
+574,Gothita,1/225,0.4449%
+971,Greavard,1/225,0.4449%
+736,Grubbin,1/225,0.4449%
+856,Hatenna,1/225,0.4449%
+679,Honedge,1/225,0.4449%
+187,Hoppip,1/225,0.4449%
+116,Horsea,1/225,0.4449%
+859,Impidimp,1/225,0.4449%
+950,Klawf,1/225,0.4449%
+599,Klink,1/225,0.4449%
+915,Lechonk,1/225,0.4449%
+506,Lillipup,1/225,0.4449%
+607,Litwick,1/225,0.4449%
+270,Lotad,1/225,0.4449%
+66,Machop,1/225,0.4449%
+81,Magnemite,1/225,0.4449%
+179,Mareep,1/225,0.4449%
+942,Maschiff,1/225,0.4449%
+932,Nacli,1/225,0.4449%
+29,Nidoran♀️,1/225,0.4449%
+32,Nidoran♂️,1/225,0.4449%
+919,Nymble,1/225,0.4449%
+43,Oddish,1/225,0.4449%
+968,Orthworm,1/225,0.4449%
+921,Pawmi,1/225,0.4449%
+16,Pidgey,1/225,0.4449%
+519,Pidove,1/225,0.4449%
+731,Pikipek,1/225,0.4449%
+60,Poliwag,1/225,0.4449%
+137,Porygon,1/225,0.4449%
+280,Ralts,1/225,0.4449%
+953,Rellor,1/225,0.4449%
+111,Rhyhorn,1/225,0.4449%
+524,Roggenrola,1/225,0.4449%
+837,Rolycoly,1/225,0.4449%
+821,Rookidee,1/225,0.4449%
+551,Sandile,1/225,0.4449%
+664,Scatterbug,1/225,0.4449%
+273,Seedot,1/225,0.4449%
+10454,Prof Tangrowth,1/225,0.4449%
+10455,Chef Dente,1/225,0.4449% 
+10456,DJ Rotom,1/225,0.4449% 
+10457,Smearguru,1/225,0.4449% 
+10458,Peakychu,1/225,0.4449% 
+10459,Mosslax,1/225,0.4449% 
+540,Sewaddle,1/225,0.4449%
+403,Shinx,1/225,0.4449%
+944,Shroodle,1/225,0.4449%
+287,Slakoth,1/225,0.4449%
+928,Smoliv,1/225,0.4449%
+577,Solosis,1/225,0.4449%
+363,Spheal,1/225,0.4449%
+396,Starly,1/225,0.4449%
+220,Swinub,1/225,0.4449%
+938,Tadbulb,1/225,0.4449%
+924,Tandemaus,1/225,0.4449%
+917,Tarountula,1/225,0.4449%
+216,Teddiursa,1/225,0.4449%
+532,Timburr,1/225,0.4449%
+957,Tinkatink,1/225,0.4449%
+948,Toedscool,1/225,0.4449%
+175,Togepi,1/225,0.4449%
+328,Trapinch,1/225,0.4449%
+535,Tympole,1/225,0.4449%
+602,Tynamo,1/225,0.4449%
+582,Vanillite,1/225,0.4449%
+965,Varoom,1/225,0.4449%
+976,Veluza,1/225,0.4449%
+543,Venipede,1/225,0.4449%
+940,Wattrel,1/225,0.4449%
+13,Weedle,1/225,0.4449%
+293,Whismur,1/225,0.4449%
+960,Wiglett,1/225,0.4449%
+265,Wurmple,1/225,0.4449%
+41,Zubat,1/225,0.4449%
+371,Bagon,1/337,0.2966%
+374,Beldum,1/337,0.2966%
+633,Deino,1/337,0.2966%
+147,Dratini,1/337,0.2966%
+443,Gible,1/337,0.2966%
+704,Goomy,1/337,0.2966%
+782,Jangmo-o,1/337,0.2966%
+246,Larvitar,1/337,0.2966%
+19,Rattata,1/337,0.2966%
+10263,Roaming Gimmighoul,1/337,0.2966%
+20003,Battle Cyclizar,1/674,0.1483%
+1,Bulbasaur,1/674,0.1483%
+4,Charmander,1/674,0.1483%
+650,Chespin,1/674,0.1483%
+152,Chikorita,1/674,0.1483%
+390,Chimchar,1/674,0.1483%
+967,Cyclizar,1/674,0.1483%
+155,Cyndaquil,1/674,0.1483%
+10258,Droopy Tatsugiri,1/674,0.1483%
+653,Fennekin,1/674,0.1483%
+656,Froakie,1/674,0.1483%
+909,Fuecoco,1/674,0.1483%
+810,Grookey,1/674,0.1483%
+725,Litten,1/674,0.1483%
+258,Mudkip,1/674,0.1483%
+501,Oshawott,1/674,0.1483%
+393,Piplup,1/674,0.1483%
+728,Popplio,1/674,0.1483%
+912,Quaxly,1/674,0.1483%
+20004,Ride Cyclizar,1/674,0.1483%
+722,Rowlet,1/674,0.1483%
+813,Scorbunny,1/674,0.1483%
+495,Snivy,1/674,0.1483%
+816,Sobble,1/674,0.1483%
+906,Sprigatito,1/674,0.1483%
+7,Squirtle,1/674,0.1483%
+10259,Stretchy Tatsugiri,1/674,0.1483%
+978,Tatsugiri,1/674,0.1483%
+498,Tepig,1/674,0.1483%
+255,Torchic,1/674,0.1483%
+158,Totodile,1/674,0.1483%
+252,Treecko,1/674,0.1483%
+387,Turtwig,1/674,0.1483%
+190,Aipom,1/899,0.1112%
+698,Amaura,1/899,0.1112%
+347,Anorith,1/899,0.1112%
+840,Applin,1/899,0.1112%
+566,Archen,1/899,0.1112%
+997,Arctibax,1/899,0.1112%
+936,Armarouge,1/899,0.1112%
+846,Arrokuda,1/899,0.1112%
+10341,Autumn Deerling,1/899,0.1112%
+343,Baltoy,1/899,0.1112%
+339,Barboach,1/899,0.1112%
+153,Bayleef,1/899,0.1112%
+939,Bellibolt,1/899,0.1112%
+712,Bergmite,1/899,0.1112%
+399,Bidoof,1/899,0.1112%
+688,Binacle,1/899,0.1112%
+522,Blitzle,1/899,0.1112%
+10260,Blue Plumage Squawkabilly,1/899,0.1112%
+525,Boldore,1/899,0.1112%
+654,Braixen,1/899,0.1112%
+947,Brambleghast,1/899,0.1112%
+729,Brionne,1/899,0.1112%
+436,Bronzor,1/899,0.1112%
+418,Buizel,1/899,0.1112%
+427,Buneary,1/899,0.1112%
+659,Bunnelby,1/899,0.1112%
+331,Cacnea,1/899,0.1112%
+838,Carkol,1/899,0.1112%
+318,Carvanha,1/899,0.1112%
+268,Cascoon,1/899,0.1112%
+937,Ceruledge,1/899,0.1112%
+975,Cetitan,1/899,0.1112%
+113,Chansey,1/899,0.1112%
+737,Charjabug,1/899,0.1112%
+420,Cherubi,1/899,0.1112%
+833,Chewtle,1/899,0.1112%
+170,Chinchou,1/899,0.1112%
+366,Clamperl,1/899,0.1112%
+692,Clauncher,1/899,0.1112%
+35,Clefairy,1/899,0.1112%
+852,Clobbopus,1/899,0.1112%
+980,Clodsire,1/899,0.1112%
+415,Combee,1/899,0.1112%
+256,Combusken,1/899,0.1112%
+341,Corphish,1/899,0.1112%
+822,Corvisquire,1/899,0.1112%
+546,Cottonee,1/899,0.1112%
+739,Crabrawler,1/899,0.1112%
+408,Cranidos,1/899,0.1112%
+453,Croagunk,1/899,0.1112%
+159,Croconaw,1/899,0.1112%
+613,Cubchoo,1/899,0.1112%
+104,Cubone,1/899,0.1112%
+878,Cufant,1/899,0.1112%
+742,Cutiefly,1/899,0.1112%
+927,Dachsbun,1/899,0.1112%
+723,Dartrix,1/899,0.1112%
+554,Darumaka,1/899,0.1112%
+585,Deerling,1/899,0.1112%
+502,Dewott,1/899,0.1112%
+751,Dewpider,1/899,0.1112%
+50,Diglett,1/899,0.1112%
+84,Doduo,1/899,0.1112%
+929,Dolliv,1/899,0.1112%
+825,Dottler,1/899,0.1112%
+680,Doublade,1/899,0.1112%
+886,Drakloak,1/899,0.1112%
+425,Drifloon,1/899,0.1112%
+529,Drilbur,1/899,0.1112%
+817,Drizzile,1/899,0.1112%
+96,Drowzee,1/899,0.1112%
+580,Ducklett,1/899,0.1112%
+982,Dudunsparce,1/899,0.1112%
+578,Duosion,1/899,0.1112%
+356,Dusclops,1/899,0.1112%
+557,Dwebble,1/899,0.1112%
+10319,East Sea Shellos,1/899,0.1112%
+603,Eelektrik,1/899,0.1112%
+133,Eevee,1/899,0.1112%
+23,Ekans,1/899,0.1112%
+125,Electabuzz,1/899,0.1112%
+309,Electrike,1/899,0.1112%
+605,Elgyem,1/899,0.1112%
+956,Espathra,1/899,0.1112%
+677,Espurr,1/899,0.1112%
+102,Exeggcute,1/899,0.1112%
+981,Farigiraf,1/899,0.1112%
+349,Feebas,1/899,0.1112%
+597,Ferroseed,1/899,0.1112%
+456,Finneon,1/899,0.1112%
+180,Flaaffy,1/899,0.1112%
+662,Fletchinder,1/899,0.1112%
+753,Fomantis,1/899,0.1112%
+590,Foongus,1/899,0.1112%
+611,Fraxure,1/899,0.1112%
+592,Frillish,1/899,0.1112%
+657,Frogadier,1/899,0.1112%
+1000,Gholdengo,1/899,0.1112%
+431,Glameow,1/899,0.1112%
+207,Gligar,1/899,0.1112%
+970,Glimmora,1/899,0.1112%
+44,Gloom,1/899,0.1112%
+42,Golbat,1/899,0.1112%
+118,Goldeen,1/899,0.1112%
+622,Golett,1/899,0.1112%
+829,Gossifleur,1/899,0.1112%
+575,Gothorita,1/899,0.1112%
+945,Grafaiai,1/899,0.1112%
+75,Graveler,1/899,0.1112%
+88,Grimer,1/899,0.1112%
+388,Grotle,1/899,0.1112%
+253,Grovyle,1/899,0.1112%
+58,Growlithe,1/899,0.1112%
+316,Gulpin,1/899,0.1112%
+533,Gurdurr,1/899,0.1112%
+857,Hattrem,1/899,0.1112%
+93,Haunter,1/899,0.1112%
+694,Helioptile,1/899,0.1112%
+507,Herdier,1/899,0.1112%
+449,Hippopotas,1/899,0.1112%
+163,Hoothoot,1/899,0.1112%
+228,Houndour,1/899,0.1112%
+972,Houndstone,1/899,0.1112%
+686,Inkay,1/899,0.1112%
+39,Jigglypuff,1/899,0.1112%
+595,Joltik,1/899,0.1112%
+140,Kabuto,1/899,0.1112%
+64,Kadabra,1/899,0.1112%
+14,Kakuna,1/899,0.1112%
+588,Karrablast,1/899,0.1112%
+941,Kilowattrel,1/899,0.1112%
+281,Kirlia,1/899,0.1112%
+600,Klang,1/899,0.1112%
+109,Koffing,1/899,0.1112%
+98,Krabby,1/899,0.1112%
+401,Kricketot,1/899,0.1112%
+552,Krokorok,1/899,0.1112%
+305,Lairon,1/899,0.1112%
+608,Lampent,1/899,0.1112%
+636,Larvesta,1/899,0.1112%
+165,Ledyba,1/899,0.1112%
+108,Lickitung,1/899,0.1112%
+345,Lileep,1/899,0.1112%
+667,Litleo,1/899,0.1112%
+920,Lokix,1/899,0.1112%
+271,Lombre,1/899,0.1112%
+294,Loudred,1/899,0.1112%
+404,Luxio,1/899,0.1112%
+943,Mabosstiff,1/899,0.1112%
+67,Machoke,1/899,0.1112%
+129,Magikarp,1/899,0.1112%
+126,Magmar,1/899,0.1112%
+82,Magneton,1/899,0.1112%
+296,Makuhita,1/899,0.1112%
+56,Mankey,1/899,0.1112%
+747,Mareanie,1/899,0.1112%
+183,Marill,1/899,0.1112%
+259,Marshtomp,1/899,0.1112%
+925,Maushold,1/899,0.1112%
+307,Meditite,1/899,0.1112%
+52,Meowth,1/899,0.1112%
+11,Metapod,1/899,0.1112%
+619,Mienfoo,1/899,0.1112%
+868,Milcery,1/899,0.1112%
+572,Minccino,1/899,0.1112%
+200,Misdreavus,1/899,0.1112%
+391,Monferno,1/899,0.1112%
+755,Morelull,1/899,0.1112%
+860,Morgrem,1/899,0.1112%
+749,Mudbray,1/899,0.1112%
+517,Munna,1/899,0.1112%
+198,Murkrow,1/899,0.1112%
+933,Naclstack,1/899,0.1112%
+177,Natu,1/899,0.1112%
+827,Nickit,1/899,0.1112%
+30,Nidorina,1/899,0.1112%
+33,Nidorino,1/899,0.1112%
+290,Nincada,1/899,0.1112%
+714,Noibat,1/899,0.1112%
+299,Nosepass,1/899,0.1112%
+322,Numel,1/899,0.1112%
+274,Nuzleaf,1/899,0.1112%
+916,Oinkologne,1/899,0.1112%
+138,Omanyte,1/899,0.1112%
+95,Onix,1/899,0.1112%
+964,Palafin,1/899,0.1112%
+536,Palpitoad,1/899,0.1112%
+674,Pancham,1/899,0.1112%
+515,Panpour,1/899,0.1112%
+511,Pansage,1/899,0.1112%
+513,Pansear,1/899,0.1112%
+46,Paras,1/899,0.1112%
+504,Patrat,1/899,0.1112%
+922,Pawmo,1/899,0.1112%
+624,Pawniard,1/899,0.1112%
+548,Petilil,1/899,0.1112%
+231,Phanpy,1/899,0.1112%
+708,Phantump,1/899,0.1112%
+17,Pidgeotto,1/899,0.1112%
+499,Pignite,1/899,0.1112%
+25,Pikachu,1/899,0.1112%
+221,Piloswine,1/899,0.1112%
+204,Pineco,1/899,0.1112%
+61,Poliwhirl,1/899,0.1112%
+77,Ponyta,1/899,0.1112%
+261,Poochyena,1/899,0.1112%
+233,Porygon2,1/899,0.1112%
+394,Prinplup,1/899,0.1112%
+54,Psyduck,1/899,0.1112%
+710,Pumpkaboo,1/899,0.1112%
+509,Purrloin,1/899,0.1112%
+156,Quilava,1/899,0.1112%
+651,Quilladin,1/899,0.1112%
+814,Raboot,1/899,0.1112%
+954,Rabsca,1/899,0.1112%
+223,Remoraid,1/899,0.1112%
+966,Revavroom,1/899,0.1112%
+112,Rhydon,1/899,0.1112%
+447,Riolu,1/899,0.1112%
+744,Rockruff,1/899,0.1112%
+315,Roselia,1/899,0.1112%
+627,Rufflet,1/899,0.1112%
+757,Salandit,1/899,0.1112%
+27,Sandshrew,1/899,0.1112%
+769,Sandygast,1/899,0.1112%
+952,Scovillain,1/899,0.1112%
+559,Scraggy,1/899,0.1112%
+123,Scyther,1/899,0.1112%
+117,Seadra,1/899,0.1112%
+364,Sealeo,1/899,0.1112%
+86,Seel,1/899,0.1112%
+161,Sentret,1/899,0.1112%
+496,Servine,1/899,0.1112%
+90,Shellder,1/899,0.1112%
+422,Shellos,1/899,0.1112%
+616,Shelmet,1/899,0.1112%
+410,Shieldon,1/899,0.1112%
+285,Shroomish,1/899,0.1112%
+353,Shuppet,1/899,0.1112%
+266,Silcoon,1/899,0.1112%
+843,Silicobra,1/899,0.1112%
+854,Sinistea,1/899,0.1112%
+850,Sizzlipede,1/899,0.1112%
+672,Skiddo,1/899,0.1112%
+188,Skiploom,1/899,0.1112%
+300,Skitty,1/899,0.1112%
+451,Skorupi,1/899,0.1112%
+690,Skrelp,1/899,0.1112%
+819,Skwovet,1/899,0.1112%
+79,Slowpoke,1/899,0.1112%
+218,Slugma,1/899,0.1112%
+215,Sneasel,1/899,0.1112%
+872,Snom,1/899,0.1112%
+361,Snorunt,1/899,0.1112%
+459,Snover,1/899,0.1112%
+209,Snubbull,1/899,0.1112%
+21,Spearow,1/899,0.1112%
+665,Spewpa,1/899,0.1112%
+918,Spidops,1/899,0.1112%
+167,Spinarak,1/899,0.1112%
+325,Spoink,1/899,0.1112%
+682,Spritzee,1/899,0.1112%
+931,Squawkabilly,1/899,0.1112%
+234,Stantler,1/899,0.1112%
+397,Staravia,1/899,0.1112%
+120,Staryu,1/899,0.1112%
+762,Steenee,1/899,0.1112%
+759,Stufful,1/899,0.1112%
+434,Stunky,1/899,0.1112%
+10340,Summer Deerling,1/899,0.1112%
+191,Sunkern,1/899,0.1112%
+283,Surskit,1/899,0.1112%
+333,Swablu,1/899,0.1112%
+541,Swadloon,1/899,0.1112%
+684,Swirlix,1/899,0.1112%
+276,Taillow,1/899,0.1112%
+114,Tangela,1/899,0.1112%
+72,Tentacool,1/899,0.1112%
+811,Thwackey,1/899,0.1112%
+958,Tinkatuff,1/899,0.1112%
+564,Tirtouga,1/899,0.1112%
+949,Toedscruel,1/899,0.1112%
+176,Togetic,1/899,0.1112%
+726,Torracat,1/899,0.1112%
+848,Toxel,1/899,0.1112%
+520,Tranquill,1/899,0.1112%
+568,Trubbish,1/899,0.1112%
+732,Trumbeak,1/899,0.1112%
+236,Tyrogue,1/899,0.1112%
+696,Tyrunt,1/899,0.1112%
+217,Ursaring,1/899,0.1112%
+583,Vanillish,1/899,0.1112%
+48,Venonat,1/899,0.1112%
+329,Vibrava,1/899,0.1112%
+288,Vigoroth,1/899,0.1112%
+100,Voltorb,1/899,0.1112%
+629,Vullaby,1/899,0.1112%
+37,Vulpix,1/899,0.1112%
+320,Wailmer,1/899,0.1112%
+70,Weepinbell,1/899,0.1112%
+544,Whirlipede,1/899,0.1112%
+10262,White Plumage Squawkabilly,1/899,0.1112%
+767,Wimpod,1/899,0.1112%
+278,Wingull,1/899,0.1112%
+10342,Winter Deerling,1/899,0.1112%
+527,Woobat,1/899,0.1112%
+831,Wooloo,1/899,0.1112%
+194,Wooper,1/899,0.1112%
+961,Wugtrio,1/899,0.1112%
+562,Yamask,1/899,0.1112%
+835,Yamper,1/899,0.1112%
+193,Yanma,1/899,0.1112%
+10261,Yellow Plumage Squawkabilly,1/899,0.1112%
+734,Yungoos,1/899,0.1112%
+263,Zigzagoon,1/899,0.1112%
+570,Zorua,1/899,0.1112%
+10307,Blue Flower Flabébé,1/1121,0.0892%
+669,Flabébé,1/1121,0.0892%
+10306,Orange Flower Flabébé,1/1121,0.0892%
+10308,White Flower Flabébé,1/1121,0.0892%
+10305,Yellow Flower Flabébé,1/1121,0.0892%
+10152,Dusk Lycanroc,1/1199,0.0834%
+745,Lycanroc,1/1199,0.0834%
+10126,Midnight Lycanroc,1/1199,0.0834%
+5,Charmeleon,1/1349,0.0742%
+910,Crocalor,1/1349,0.0742%
+148,Dragonair,1/1349,0.0742%
+907,Floragato,1/1349,0.0742%
+444,Gabite,1/1349,0.0742%
+783,Hakamo-o,1/1349,0.0742%
+2,Ivysaur,1/1349,0.0742%
+375,Metang,1/1349,0.0742%
+247,Pupitar,1/1349,0.0742%
+913,Quaxwell,1/1349,0.0742%
+20,Raticate,1/1349,0.0742%
+372,Shelgon,1/1349,0.0742%
+705,Sliggoo,1/1349,0.0742%
+8,Wartortle,1/1349,0.0742%
+634,Zweilous,1/1349,0.0742%
+412,Burmy,1/2697,0.0371%
+10452,Sandy Burmy,1/2697,0.0371%
+10453,Trash Burmy,1/2697,0.0371%
+460,Abomasnow,1/3596,0.0278%
+359,Absol,1/3596,0.0278%
+617,Accelgor,1/3596,0.0278%
+681,Aegislash,1/3596,0.0278%
+142,Aerodactyl,1/3596,0.0278%
+306,Aggron,1/3596,0.0278%
+65,Alakazam,1/3596,0.0278%
+594,Alomomola,1/3596,0.0278%
+334,Altaria,1/3596,0.0278%
+424,Ambipom,1/3596,0.0278%
+591,Amoonguss,1/3596,0.0278%
+849,Amped Toxtricity,1/3596,0.0278%
+181,Ampharos,1/3596,0.0278%
+979,Annihilape,1/3596,0.0278%
+842,Appletun,1/3596,0.0278%
+752,Araquanid,1/3596,0.0278%
+24,Arbok,1/3596,0.0278%
+930,Arboliva,1/3596,0.0278%
+59,Arcanine,1/3596,0.0278%
+567,Archeops,1/3596,0.0278%
+883,Arctovish,1/3596,0.0278%
+881,Arctozolt,1/3596,0.0278%
+168,Ariados,1/3596,0.0278%
+348,Armaldo,1/3596,0.0278%
+683,Aromatisse,1/3596,0.0278%
+531,Audino,1/3596,0.0278%
+699,Aurorus,1/3596,0.0278%
+10344,Autumn Sawsbuck,1/3596,0.0278%
+713,Avalugg,1/3596,0.0278%
+184,Azumarill,1/3596,0.0278%
+298,Azurill,1/3596,0.0278%
+354,Banette,1/3596,0.0278%
+689,Barbaracle,1/3596,0.0278%
+847,Barraskewda,1/3596,0.0278%
+550,Basculin,1/3596,0.0278%
+411,Bastiodon,1/3596,0.0278%
+998,Baxcalibur,1/3596,0.0278%
+614,Beartic,1/3596,0.0278%
+267,Beautifly,1/3596,0.0278%
+15,Beedrill,1/3596,0.0278%
+606,Beheeyem,1/3596,0.0278%
+182,Bellossom,1/3596,0.0278%
+760,Bewear,1/3596,0.0278%
+400,Bibarel,1/3596,0.0278%
+625,Bisharp,1/3596,0.0278%
+9,Blastoise,1/3596,0.0278%
+257,Blaziken,1/3596,0.0278%
+242,Blissey,1/3596,0.0278%
+10016,Blue-Striped Basculin,1/3596,0.0278%
+836,Boltund,1/3596,0.0278%
+438,Bonsly,1/3596,0.0278%
+626,Bouffalant,1/3596,0.0278%
+628,Braviary,1/3596,0.0278%
+286,Breloom,1/3596,0.0278%
+437,Bronzong,1/3596,0.0278%
+779,Bruxish,1/3596,0.0278%
+406,Budew,1/3596,0.0278%
+12,Butterfree,1/3596,0.0278%
+332,Cacturne,1/3596,0.0278%
+323,Camerupt,1/3596,0.0278%
+703,Carbink,1/3596,0.0278%
+455,Carnivine,1/3596,0.0278%
+565,Carracosta,1/3596,0.0278%
+351,Castform,1/3596,0.0278%
+851,Centiskorch,1/3596,0.0278%
+609,Chandelure,1/3596,0.0278%
+6,Charizard,1/3596,0.0278%
+441,Chatot,1/3596,0.0278%
+421,Cherrim,1/3596,0.0278%
+652,Chesnaught,1/3596,0.0278%
+358,Chimecho,1/3596,0.0278%
+433,Chingling,1/3596,0.0278%
+573,Cinccino,1/3596,0.0278%
+815,Cinderace,1/3596,0.0278%
+693,Clawitzer,1/3596,0.0278%
+344,Claydol,1/3596,0.0278%
+36,Clefable,1/3596,0.0278%
+173,Cleffa,1/3596,0.0278%
+91,Cloyster,1/3596,0.0278%
+839,Coalossal,1/3596,0.0278%
+563,Cofagrigus,1/3596,0.0278%
+764,Comfey,1/3596,0.0278%
+534,Conkeldurr,1/3596,0.0278%
+879,Copperajah,1/3596,0.0278%
+222,Corsola,1/3596,0.0278%
+823,Corviknight,1/3596,0.0278%
+740,Crabominable,1/3596,0.0278%
+346,Cradily,1/3596,0.0278%
+845,Cramorant,1/3596,0.0278%
+342,Crawdaunt,1/3596,0.0278%
+169,Crobat,1/3596,0.0278%
+558,Crustle,1/3596,0.0278%
+615,Cryogonal,1/3596,0.0278%
+555,Darmanitan,1/3596,0.0278%
+724,Decidueye,1/3596,0.0278%
+702,Dedenne,1/3596,0.0278%
+301,Delcatty,1/3596,0.0278%
+225,Delibird,1/3596,0.0278%
+655,Delphox,1/3596,0.0278%
+87,Dewgong,1/3596,0.0278%
+781,Dhelmise,1/3596,0.0278%
+660,Diggersby,1/3596,0.0278%
+1011,Dipplin,1/3596,0.0278%
+132,Ditto,1/3596,0.0278%
+85,Dodrio,1/3596,0.0278%
+232,Donphan,1/3596,0.0278%
+882,Dracovish,1/3596,0.0278%
+880,Dracozolt,1/3596,0.0278%
+691,Dragalge,1/3596,0.0278%
+887,Dragapult,1/3596,0.0278%
+780,Drampa,1/3596,0.0278%
+452,Drapion,1/3596,0.0278%
+834,Drednaw,1/3596,0.0278%
+426,Drifblim,1/3596,0.0278%
+621,Druddigon,1/3596,0.0278%
+832,Dubwool,1/3596,0.0278%
+51,Dugtrio,1/3596,0.0278%
+206,Dunsparce,1/3596,0.0278%
+884,Duraludon,1/3596,0.0278%
+632,Durant,1/3596,0.0278%
+477,Dusknoir,1/3596,0.0278%
+269,Dustox,1/3596,0.0278%
+10320,East Sea Gastrodon,1/3596,0.0278%
+604,Eelektross,1/3596,0.0278%
+875,Eiscue,1/3596,0.0278%
+830,Eldegoss,1/3596,0.0278%
+466,Electivire,1/3596,0.0278%
+101,Electrode,1/3596,0.0278%
+239,Elekid,1/3596,0.0278%
+500,Emboar,1/3596,0.0278%
+587,Emolga,1/3596,0.0278%
+395,Empoleon,1/3596,0.0278%
+589,Escavalier,1/3596,0.0278%
+196,Espeon,1/3596,0.0278%
+530,Excadrill,1/3596,0.0278%
+103,Exeggutor,1/3596,0.0278%
+295,Exploud,1/3596,0.0278%
+870,Falinks,1/3596,0.0278%
+10257,Family of Three Maushold,1/3596,0.0278%
+83,Farfetch'd,1/3596,0.0278%
+22,Fearow,1/3596,0.0278%
+160,Feraligatr,1/3596,0.0278%
+598,Ferrothorn,1/3596,0.0278%
+841,Flapple,1/3596,0.0278%
+136,Flareon,1/3596,0.0278%
+419,Floatzel,1/3596,0.0278%
+330,Flygon,1/3596,0.0278%
+205,Forretress,1/3596,0.0278%
+478,Froslass,1/3596,0.0278%
+873,Frosmoth,1/3596,0.0278%
+676,Furfrou,1/3596,0.0278%
+162,Furret,1/3596,0.0278%
+475,Gallade,1/3596,0.0278%
+596,Galvantula,1/3596,0.0278%
+569,Garbodor,1/3596,0.0278%
+282,Gardevoir,1/3596,0.0278%
+934,Garganacl,1/3596,0.0278%
+423,Gastrodon,1/3596,0.0278%
+94,Gengar,1/3596,0.0278%
+526,Gigalith,1/3596,0.0278%
+203,Girafarig,1/3596,0.0278%
+471,Glaceon,1/3596,0.0278%
+362,Glalie,1/3596,0.0278%
+472,Gliscor,1/3596,0.0278%
+673,Gogoat,1/3596,0.0278%
+55,Golduck,1/3596,0.0278%
+76,Golem,1/3596,0.0278%
+768,Golisopod,1/3596,0.0278%
+623,Golurk,1/3596,0.0278%
+368,Gorebyss,1/3596,0.0278%
+576,Gothitelle,1/3596,0.0278%
+711,Gourgeist,1/3596,0.0278%
+210,Granbull,1/3596,0.0278%
+853,Grapploct,1/3596,0.0278%
+820,Greedent,1/3596,0.0278%
+658,Greninja,1/3596,0.0278%
+861,Grimmsnarl,1/3596,0.0278%
+326,Grumpig,1/3596,0.0278%
+735,Gumshoos,1/3596,0.0278%
+130,Gyarados,1/3596,0.0278%
+440,Happiny,1/3596,0.0278%
+297,Hariyama,1/3596,0.0278%
+858,Hatterene,1/3596,0.0278%
+701,Hawlucha,1/3596,0.0278%
+612,Haxorus,1/3596,0.0278%
+631,Heatmor,1/3596,0.0278%
+695,Heliolisk,1/3596,0.0278%
+214,Heracross,1/3596,0.0278%
+10256,Hero Palafin,1/3596,0.0278%
+450,Hippowdon,1/3596,0.0278%
+107,Hitmonchan,1/3596,0.0278%
+106,Hitmonlee,1/3596,0.0278%
+237,Hitmontop,1/3596,0.0278%
+430,Honchkrow,1/3596,0.0278%
+229,Houndoom,1/3596,0.0278%
+367,Huntail,1/3596,0.0278%
+97,Hypno,1/3596,0.0278%
+174,Igglybuff,1/3596,0.0278%
+314,Illumise,1/3596,0.0278%
+727,Incineroar,1/3596,0.0278%
+876,Indeedee,1/3596,0.0278%
+392,Infernape,1/3596,0.0278%
+818,Inteleon,1/3596,0.0278%
+593,Jellicent,1/3596,0.0278%
+135,Jolteon,1/3596,0.0278%
+189,Jumpluff,1/3596,0.0278%
+124,Jynx,1/3596,0.0278%
+141,Kabutops,1/3596,0.0278%
+115,Kangaskhan,1/3596,0.0278%
+352,Kecleon,1/3596,0.0278%
+983,Kingambit,1/3596,0.0278%
+230,Kingdra,1/3596,0.0278%
+99,Kingler,1/3596,0.0278%
+900,Kleavor,1/3596,0.0278%
+707,Klefki,1/3596,0.0278%
+601,Klinklang,1/3596,0.0278%
+775,Komala,1/3596,0.0278%
+402,Kricketune,1/3596,0.0278%
+553,Krookodile,1/3596,0.0278%
+171,Lanturn,1/3596,0.0278%
+131,Lapras,1/3596,0.0278%
+470,Leafeon,1/3596,0.0278%
+542,Leavanny,1/3596,0.0278%
+166,Ledian,1/3596,0.0278%
+463,Lickilicky,1/3596,0.0278%
+510,Liepard,1/3596,0.0278%
+549,Lilligant,1/3596,0.0278%
+264,Linoone,1/3596,0.0278%
+428,Lopunny,1/3596,0.0278%
+10178,Low Key Toxtricity,1/3596,0.0278%
+448,Lucario,1/3596,0.0278%
+272,Ludicolo,1/3596,0.0278%
+457,Lumineon,1/3596,0.0278%
+337,Lunatone,1/3596,0.0278%
+754,Lurantis,1/3596,0.0278%
+370,Luvdisc,1/3596,0.0278%
+405,Luxray,1/3596,0.0278%
+68,Machamp,1/3596,0.0278%
+240,Magby,1/3596,0.0278%
+219,Magcargo,1/3596,0.0278%
+467,Magmortar,1/3596,0.0278%
+462,Magnezone,1/3596,0.0278%
+687,Malamar,1/3596,0.0278%
+473,Mamoswine,1/3596,0.0278%
+630,Mandibuzz,1/3596,0.0278%
+310,Manectric,1/3596,0.0278%
+226,Mantine,1/3596,0.0278%
+458,Mantyke,1/3596,0.0278%
+556,Maractus,1/3596,0.0278%
+105,Marowak,1/3596,0.0278%
+284,Masquerain,1/3596,0.0278%
+303,Mawile,1/3596,0.0278%
+308,Medicham,1/3596,0.0278%
+154,Meganium,1/3596,0.0278%
+908,Meowscarada,1/3596,0.0278%
+678,Meowstic,1/3596,0.0278%
+620,Mienshao,1/3596,0.0278%
+262,Mightyena,1/3596,0.0278%
+350,Milotic,1/3596,0.0278%
+241,Miltank,1/3596,0.0278%
+439,Mime Jr.,1/3596,0.0278%
+778,Mimikyu,1/3596,0.0278%
+774,Minior,1/3596,0.0278%
+312,Minun,1/3596,0.0278%
+429,Mismagius,1/3596,0.0278%
+877,Morpeko,1/3596,0.0278%
+414,Mothim,1/3596,0.0278%
+122,Mr. Mime,1/3596,0.0278%
+750,Mudsdale,1/3596,0.0278%
+89,Muk,1/3596,0.0278%
+446,Munchlax,1/3596,0.0278%
+518,Musharna,1/3596,0.0278%
+34,Nidoking,1/3596,0.0278%
+31,Nidoqueen,1/3596,0.0278%
+38,Ninetales,1/3596,0.0278%
+291,Ninjask,1/3596,0.0278%
+164,Noctowl,1/3596,0.0278%
+715,Noivern,1/3596,0.0278%
+224,Octillery,1/3596,0.0278%
+139,Omastar,1/3596,0.0278%
+765,Oranguru,1/3596,0.0278%
+826,Orbeetle,1/3596,0.0278%
+741,Oricorio,1/3596,0.0278%
+10124,Pa'u Oricorio,1/3596,0.0278%
+417,Pachirisu,1/3596,0.0278%
+770,Palossand,1/3596,0.0278%
+675,Pangoro,1/3596,0.0278%
+47,Parasect,1/3596,0.0278%
+766,Passimian,1/3596,0.0278%
+923,Pawmot,1/3596,0.0278%
+279,Pelipper,1/3596,0.0278%
+53,Persian,1/3596,0.0278%
+18,Pidgeot,1/3596,0.0278%
+871,Pincurchin,1/3596,0.0278%
+127,Pinsir,1/3596,0.0278%
+311,Plusle,1/3596,0.0278%
+186,Politoed,1/3596,0.0278%
+62,Poliwrath,1/3596,0.0278%
+1012,Poltchageist,1/3596,0.0278%
+855,Polteageist,1/3596,0.0278%
+10123,Pom-pom Oricorio,1/3596,0.0278%
+474,Porygon-Z,1/3596,0.0278%
+730,Primarina,1/3596,0.0278%
+57,Primeape,1/3596,0.0278%
+476,Probopass,1/3596,0.0278%
+432,Purugly,1/3596,0.0278%
+668,Pyroar,1/3596,0.0278%
+771,Pyukumuku,1/3596,0.0278%
+195,Quagsire,1/3596,0.0278%
+914,Quaquaval,1/3596,0.0278%
+211,Qwilfish,1/3596,0.0278%
+26,Raichu,1/3596,0.0278%
+10014,Rainy Castform,1/3596,0.0278%
+409,Rampardos,1/3596,0.0278%
+78,Rapidash,1/3596,0.0278%
+369,Relicanth,1/3596,0.0278%
+579,Reuniclus,1/3596,0.0278%
+464,Rhyperior,1/3596,0.0278%
+743,Ribombee,1/3596,0.0278%
+812,Rillaboom,1/3596,0.0278%
+407,Roserade,1/3596,0.0278%
+302,Sableye,1/3596,0.0278%
+758,Salazzle,1/3596,0.0278%
+503,Samurott,1/3596,0.0278%
+844,Sandaconda,1/3596,0.0278%
+28,Sandslash,1/3596,0.0278%
+10004,Sandy Wormadam,1/3596,0.0278%
+539,Sawk,1/3596,0.0278%
+586,Sawsbuck,1/3596,0.0278%
+254,Sceptile,1/3596,0.0278%
+212,Scizor,1/3596,0.0278%
+545,Scolipede,1/3596,0.0278%
+560,Scrafty,1/3596,0.0278%
+119,Seaking,1/3596,0.0278%
+537,Seismitoad,1/3596,0.0278%
+10125,Sensu Oricorio,1/3596,0.0278%
+497,Serperior,1/3596,0.0278%
+336,Seviper,1/3596,0.0278%
+319,Sharpedo,1/3596,0.0278%
+292,Shedinja,1/3596,0.0278%
+275,Shiftry,1/3596,0.0278%
+756,Shiinotic,1/3596,0.0278%
+213,Shuckle,1/3596,0.0278%
+561,Sigilyph,1/3596,0.0278%
+516,Simipour,1/3596,0.0278%
+512,Simisage,1/3596,0.0278%
+514,Simisear,1/3596,0.0278%
+227,Skarmory,1/3596,0.0278%
+911,Skeledirge,1/3596,0.0278%
+435,Skuntank,1/3596,0.0278%
+289,Slaking,1/3596,0.0278%
+80,Slowbro,1/3596,0.0278%
+199,Slowking,1/3596,0.0278%
+685,Slurpuff,1/3596,0.0278%
+235,Smeargle,1/3596,0.0278%
+238,Smoochum,1/3596,0.0278%
+143,Snorlax,1/3596,0.0278%
+10015,Snowy Castform,1/3596,0.0278%
+338,Solrock,1/3596,0.0278%
+327,Spinda,1/3596,0.0278%
+442,Spiritomb,1/3596,0.0278%
+398,Staraptor,1/3596,0.0278%
+121,Starmie,1/3596,0.0278%
+208,Steelix,1/3596,0.0278%
+874,Stonjourner,1/3596,0.0278%
+508,Stoutland,1/3596,0.0278%
+618,Stunfisk,1/3596,0.0278%
+185,Sudowoodo,1/3596,0.0278%
+10343,Summer Sawsbuck,1/3596,0.0278%
+192,Sunflora,1/3596,0.0278%
+10013,Sunny Castform,1/3596,0.0278%
+10318,Sunshine Cherrim,1/3596,0.0278%
+317,Swalot,1/3596,0.0278%
+260,Swampert,1/3596,0.0278%
+581,Swanna,1/3596,0.0278%
+277,Swellow,1/3596,0.0278%
+528,Swoobat,1/3596,0.0278%
+700,Sylveon,1/3596,0.0278%
+663,Talonflame,1/3596,0.0278%
+465,Tangrowth,1/3596,0.0278%
+128,Tauros,1/3596,0.0278%
+73,Tentacruel,1/3596,0.0278%
+828,Thievul,1/3596,0.0278%
+10255,Three-Segment Dudunsparce,1/3596,0.0278%
+538,Throh,1/3596,0.0278%
+959,Tinkaton,1/3596,0.0278%
+777,Togedemaru,1/3596,0.0278%
+468,Togekiss,1/3596,0.0278%
+324,Torkoal,1/3596,0.0278%
+389,Torterra,1/3596,0.0278%
+733,Toucannon,1/3596,0.0278%
+748,Toxapex,1/3596,0.0278%
+454,Toxicroak,1/3596,0.0278%
+10005,Trash Wormadam,1/3596,0.0278%
+709,Trevenant,1/3596,0.0278%
+357,Tropius,1/3596,0.0278%
+763,Tsareena,1/3596,0.0278%
+776,Turtonator,1/3596,0.0278%
+157,Typhlosion,1/3596,0.0278%
+697,Tyrantrum,1/3596,0.0278%
+197,Umbreon,1/3596,0.0278%
+521,Unfezant,1/3596,0.0278%
+901,Ursaluna,1/3596,0.0278%
+584,Vanilluxe,1/3596,0.0278%
+134,Vaporeon,1/3596,0.0278%
+49,Venomoth,1/3596,0.0278%
+3,Venusaur,1/3596,0.0278%
+416,Vespiquen,1/3596,0.0278%
+71,Victreebel,1/3596,0.0278%
+738,Vikavolt,1/3596,0.0278%
+45,Vileplume,1/3596,0.0278%
+313,Volbeat,1/3596,0.0278%
+637,Volcarona,1/3596,0.0278%
+321,Wailord,1/3596,0.0278%
+365,Walrein,1/3596,0.0278%
+505,Watchog,1/3596,0.0278%
+461,Weavile,1/3596,0.0278%
+110,Weezing,1/3596,0.0278%
+547,Whimsicott,1/3596,0.0278%
+340,Whiscash,1/3596,0.0278%
+10247,White-Striped Basculin,1/3596,0.0278%
+40,Wigglytuff,1/3596,0.0278%
+10345,Winter Sawsbuck,1/3596,0.0278%
+746,Wishiwashi,1/3596,0.0278%
+202,Wobbuffet,1/3596,0.0278%
+413,Wormadam,1/3596,0.0278%
+360,Wynaut,1/3596,0.0278%
+899,Wyrdeer,1/3596,0.0278%
+178,Xatu,1/3596,0.0278%
+469,Yanmega,1/3596,0.0278%
+335,Zangoose,1/3596,0.0278%
+523,Zebstrika,1/3596,0.0278%
+571,Zoroark,1/3596,0.0278%
+10311,Blue Flower Floette,1/4483,0.0223%
+670,Floette,1/4483,0.0223%
+10310,Orange Flower Floette,1/4483,0.0223%
+10312,White Flower Floette,1/4483,0.0223%
+10309,Yellow Flower Floette,1/4483,0.0223%
+149,Dragonite,1/5394,0.0185%
+445,Garchomp,1/5394,0.0185%
+706,Goodra,1/5394,0.0185%
+635,Hydreigon,1/5394,0.0185%
+784,Kommo-o,1/5394,0.0185%
+376,Metagross,1/5394,0.0185%
+373,Salamence,1/5394,0.0185%
+10127,School Wishiwashi,1/5394,0.0185%
+248,Tyranitar,1/5394,0.0185%
+172,Pichu,1/7192,0.0139%
+10317,Spiky-eared Pichu,1/7192,0.0139%
+10105,Alolan Diglett,1/14384,0.007%
+10109,Alolan Geodude,1/14384,0.007%
+10112,Alolan Grimer,1/14384,0.007%
+10107,Alolan Meowth,1/14384,0.007%
+10100,Alolan Raichu,1/14384,0.007%
+10091,Alolan Rattata,1/14384,0.007%
+10101,Alolan Sandshrew,1/14384,0.007%
+10103,Alolan Vulpix,1/14384,0.007%
+1018,Archaludon,1/14384,0.007%
+902,Basculegion,1/14384,0.007%
+10026,Blade Aegislash,1/14384,0.007%
+1016,Fezandipiti,1/14384,0.007%
+10170,Galarian Corsola,1/14384,0.007%
+10174,Galarian Darmanitan,1/14384,0.007%
+10163,Galarian Farfetch'd,1/14384,0.007%
+10172,Galarian Linoone,1/14384,0.007%
+10158,Galarian Meowth,1/14384,0.007%
+10159,Galarian Ponyta,1/14384,0.007%
+10161,Galarian Slowpoke,1/14384,0.007%
+10176,Galarian Yamask,1/14384,0.007%
+10175,Galarian Zen Darmanitan,1/14384,0.007%
+10245,Hangry Morpeko,1/14384,0.007%
+10221,Hisuian Growlithe,1/14384,0.007%
+10233,Hisuian Sliggoo,1/14384,0.007%
+10227,Hisuian Sneasel,1/14384,0.007%
+10223,Hisuian Voltorb,1/14384,0.007%
+10230,Hisuian Zorua,1/14384,0.007%
+1019,Hydrapple,1/14384,0.007%
+1015,Munkidori,1/14384,0.007%
+10179,Noice Face Eiscue,1/14384,0.007%
+1014,Okidogi,1/14384,0.007%
+10253,Paldean Wooper,1/14384,0.007%
+10018,Pirouette Meloetta,1/14384,0.007%
+1013,Sinistcha,1/14384,0.007%
+903,Sneasler,1/14384,0.007%
+10017,Zen Darmanitan,1/14384,0.007%
+10329,Archipelago Vivillon,1/17261,0.0058%
+10315,Blue Flower Florges,1/17261,0.0058%
+10326,Elegant Vivillon,1/17261,0.0058%
+671,Florges,1/17261,0.0058%
+10328,Marine Vivillon,1/17261,0.0058%
+10333,Monsoon Vivillon,1/17261,0.0058%
+10314,Orange Flower Florges,1/17261,0.0058%
+10322,Polar Vivillon,1/17261,0.0058%
+10316,White Flower Florges,1/17261,0.0058%
+10313,Yellow Flower Florges,1/17261,0.0058%
+10011,Fan Rotom,1/21576,0.0046%
+10010,Frost Rotom,1/21576,0.0046%
+10008,Heat Rotom,1/21576,0.0046%
+10012,Mow Rotom,1/21576,0.0046%
+479,Rotom,1/21576,0.0046%
+10009,Wash Rotom,1/21576,0.0046%
+869,Alcremie,1/24658,0.0041%
+10398,Vanilla Cream Berry Sweet Alcremie,1/24658,0.0041%
+10425,Vanilla Cream Clover Sweet Alcremie,1/24658,0.0041%
+10434,Vanilla Cream Flower Sweet Alcremie,1/24658,0.0041%
+10407,Vanilla Cream Love Sweet Alcremie,1/24658,0.0041%
+10443,Vanilla Cream Ribbon Sweet Alcremie,1/24658,0.0041%
+10416,Vanilla Cream Star Sweet Alcremie,1/24658,0.0041%
+10106,Alolan Dugtrio,1/28768,0.0035%
+10114,Alolan Exeggutor,1/28768,0.0035%
+10110,Alolan Graveler,1/28768,0.0035%
+10115,Alolan Marowak,1/28768,0.0035%
+10113,Alolan Muk,1/28768,0.0035%
+10104,Alolan Ninetales,1/28768,0.0035%
+10108,Alolan Persian,1/28768,0.0035%
+10092,Alolan Raticate,1/28768,0.0035%
+10102,Alolan Sandslash,1/28768,0.0035%
+10252,Aqua Breed Tauros,1/28768,0.0035%
+10001,Attack Deoxys,1/28768,0.0035%
+10251,Blaze Breed Tauros,1/28768,0.0035%
+251,Celebi,1/28768,0.0035%
+10250,Combat Breed Tauros,1/28768,0.0035%
+864,Cursola,1/28768,0.0035%
+491,Darkrai,1/28768,0.0035%
+10002,Defense Deoxys,1/28768,0.0035%
+386,Deoxys,1/28768,0.0035%
+719,Diancie,1/28768,0.0035%
+10173,Galarian Darumaka,1/28768,0.0035%
+10165,Galarian Mr. Mime,1/28768,0.0035%
+10160,Galarian Rapidash,1/28768,0.0035%
+10162,Galarian Slowbro,1/28768,0.0035%
+10177,Galarian Stunfisk,1/28768,0.0035%
+10164,Galarian Weezing,1/28768,0.0035%
+10171,Galarian Zigzagoon,1/28768,0.0035%
+10222,Hisuian Arcanine,1/28768,0.0035%
+10235,Hisuian Avalugg,1/28768,0.0035%
+10232,Hisuian Braviary,1/28768,0.0035%
+10236,Hisuian Decidueye,1/28768,0.0035%
+10224,Hisuian Electrode,1/28768,0.0035%
+10234,Hisuian Goodra,1/28768,0.0035%
+10229,Hisuian Lilligant,1/28768,0.0035%
+10226,Hisuian Qwilfish,1/28768,0.0035%
+10228,Hisuian Samurott,1/28768,0.0035%
+10225,Hisuian Typhlosion,1/28768,0.0035%
+10231,Hisuian Zoroark,1/28768,0.0035%
+720,Hoopa,1/28768,0.0035%
+385,Jirachi,1/28768,0.0035%
+647,Keldeo,1/28768,0.0035%
+801,Magearna,1/28768,0.0035%
+490,Manaphy,1/28768,0.0035%
+802,Marshadow,1/28768,0.0035%
+809,Melmetal,1/28768,0.0035%
+648,Meloetta,1/28768,0.0035%
+808,Meltan,1/28768,0.0035%
+151,Mew,1/28768,0.0035%
+862,Obstagoon,1/28768,0.0035%
+904,Overqwil,1/28768,0.0035%
+1025,Pecharunt,1/28768,0.0035%
+863,Perrserker,1/28768,0.0035%
+489,Phione,1/28768,0.0035%
+867,Runerigus,1/28768,0.0035%
+492,Shaymin,1/28768,0.0035%
+865,Sirfetch'd,1/28768,0.0035%
+10003,Speed Deoxys,1/28768,0.0035%
+494,Victini,1/28768,0.0035%
+721,Volcanion,1/28768,0.0035%
+893,Zarude,1/28768,0.0035%
+807,Zeraora,1/28768,0.0035%
+10405,Caramel Swirl Berry Sweet Alcremie,1/31383,0.0032%
+10432,Caramel Swirl Clover Sweet Alcremie,1/31383,0.0032%
+10441,Caramel Swirl Flower Sweet Alcremie,1/31383,0.0032%
+10414,Caramel Swirl Love Sweet Alcremie,1/31383,0.0032%
+10450,Caramel Swirl Ribbon Sweet Alcremie,1/31383,0.0032%
+10423,Caramel Swirl Star Sweet Alcremie,1/31383,0.0032%
+10396,Caramel Swirl Strawberry Sweet Alcremie,1/31383,0.0032%
+10402,Lemon Cream Berry Sweet Alcremie,1/31383,0.0032%
+10429,Lemon Cream Clover Sweet Alcremie,1/31383,0.0032%
+10438,Lemon Cream Flower Sweet Alcremie,1/31383,0.0032%
+10411,Lemon Cream Love Sweet Alcremie,1/31383,0.0032%
+10447,Lemon Cream Ribbon Sweet Alcremie,1/31383,0.0032%
+10420,Lemon Cream Star Sweet Alcremie,1/31383,0.0032%
+10393,Lemon Cream Strawberry Sweet Alcremie,1/31383,0.0032%
+10400,Matcha Cream Berry Sweet Alcremie,1/31383,0.0032%
+10427,Matcha Cream Clover Sweet Alcremie,1/31383,0.0032%
+10436,Matcha Cream Flower Sweet Alcremie,1/31383,0.0032%
+10409,Matcha Cream Love Sweet Alcremie,1/31383,0.0032%
+10445,Matcha Cream Ribbon Sweet Alcremie,1/31383,0.0032%
+10418,Matcha Cream Star Sweet Alcremie,1/31383,0.0032%
+10391,Matcha Cream Strawberry Sweet Alcremie,1/31383,0.0032%
+10401,Mint Cream Berry Sweet Alcremie,1/31383,0.0032%
+10428,Mint Cream Clover Sweet Alcremie,1/31383,0.0032%
+10437,Mint Cream Flower Sweet Alcremie,1/31383,0.0032%
+10410,Mint Cream Love Sweet Alcremie,1/31383,0.0032%
+10446,Mint Cream Ribbon Sweet Alcremie,1/31383,0.0032%
+10419,Mint Cream Star Sweet Alcremie,1/31383,0.0032%
+10392,Mint Cream Strawberry Sweet Alcremie,1/31383,0.0032%
+10406,Rainbow Swirl Berry Sweet Alcremie,1/31383,0.0032%
+10433,Rainbow Swirl Clover Sweet Alcremie,1/31383,0.0032%
+10442,Rainbow Swirl Flower Sweet Alcremie,1/31383,0.0032%
+10415,Rainbow Swirl Love Sweet Alcremie,1/31383,0.0032%
+10451,Rainbow Swirl Ribbon Sweet Alcremie,1/31383,0.0032%
+10424,Rainbow Swirl Star Sweet Alcremie,1/31383,0.0032%
+10397,Rainbow Swirl Strawberry Sweet Alcremie,1/31383,0.0032%
+10399,Ruby Cream Berry Sweet Alcremie,1/31383,0.0032%
+10426,Ruby Cream Clover Sweet Alcremie,1/31383,0.0032%
+10435,Ruby Cream Flower Sweet Alcremie,1/31383,0.0032%
+10408,Ruby Cream Love Sweet Alcremie,1/31383,0.0032%
+10444,Ruby Cream Ribbon Sweet Alcremie,1/31383,0.0032%
+10417,Ruby Cream Star Sweet Alcremie,1/31383,0.0032%
+10390,Ruby Cream Strawberry Sweet Alcremie,1/31383,0.0032%
+10404,Ruby Swirl Berry Sweet Alcremie,1/31383,0.0032%
+10431,Ruby Swirl Clover Sweet Alcremie,1/31383,0.0032%
+10440,Ruby Swirl Flower Sweet Alcremie,1/31383,0.0032%
+10413,Ruby Swirl Love Sweet Alcremie,1/31383,0.0032%
+10449,Ruby Swirl Ribbon Sweet Alcremie,1/31383,0.0032%
+10422,Ruby Swirl Star Sweet Alcremie,1/31383,0.0032%
+10395,Ruby Swirl Strawberry Sweet Alcremie,1/31383,0.0032%
+10403,Salted Cream Berry Sweet Alcremie,1/31383,0.0032%
+10430,Salted Cream Clover Sweet Alcremie,1/31383,0.0032%
+10439,Salted Cream Flower Sweet Alcremie,1/31383,0.0032%
+10412,Salted Cream Love Sweet Alcremie,1/31383,0.0032%
+10448,Salted Cream Ribbon Sweet Alcremie,1/31383,0.0032%
+10421,Salted Cream Star Sweet Alcremie,1/31383,0.0032%
+10394,Salted Cream Strawberry Sweet Alcremie,1/31383,0.0032%
+10246,Dada Zarude,1/34522,0.0029%
+10386,Dandy Trim Furfrou,1/34522,0.0029%
+10384,Debutante Trim Furfrou,1/34522,0.0029%
+10383,Diamond Trim Furfrou,1/34522,0.0029%
+10244,Gorging Cramorant,1/34522,0.0029%
+10243,Gulping Cramorant,1/34522,0.0029%
+10381,Heart Trim Furfrou,1/34522,0.0029%
+10388,Kabuki Trim Furfrou,1/34522,0.0029%
+10387,La Reine Trim Furfrou,1/34522,0.0029%
+10385,Matron Trim Furfrou,1/34522,0.0029%
+10389,Pharaoh Trim Furfrou,1/34522,0.0029%
+10382,Star Trim Furfrou,1/34522,0.0029%
+20002,Zenith Marshadow,1/34522,0.0029%
+20000,Zygarde Cell,1/34522,0.0029%
+20001,Zygarde Core,1/34522,0.0029%
+986,Brute Bonnet,1/43152,0.0023%
+10324,Continental Vivillon,1/43152,0.0023%
+987,Flutter Mane,1/43152,0.0023%
+10325,Garden Vivillon,1/43152,0.0023%
+1020,Gouging Fire,1/43152,0.0023%
+984,Great Tusk,1/43152,0.0023%
+10330,High Plain Vivillon,1/43152,0.0023%
+10321,Icy Snow Vivillon,1/43152,0.0023%
+1022,Iron Boulder,1/43152,0.0023%
+991,Iron Bundle,1/43152,0.0023%
+1023,Iron Crown,1/43152,0.0023%
+992,Iron Hands,1/43152,0.0023%
+993,Iron Jugulis,1/43152,0.0023%
+1010,Iron Leaves,1/43152,0.0023%
+994,Iron Moth,1/43152,0.0023%
+995,Iron Thorns,1/43152,0.0023%
+990,Iron Treads,1/43152,0.0023%
+1006,Iron Valiant,1/43152,0.0023%
+10337,Jungle Vivillon,1/43152,0.0023%
+10327,Modern Vivillon,1/43152,0.0023%
+10336,Ocean Vivillon,1/43152,0.0023%
+1021,Raging Bolt,1/43152,0.0023%
+10332,River Vivillon,1/43152,0.0023%
+1005,Roaring Moon,1/43152,0.0023%
+20008,Rotom Drone,1/43152,0.0023%
+20007,Rotom Phone,1/43152,0.0023%
+20006,Rotom Pokédex,1/43152,0.0023%
+10331,Sandstorm Vivillon,1/43152,0.0023%
+989,Sandy Shocks,1/43152,0.0023%
+10334,Savanna Vivillon,1/43152,0.0023%
+985,Scream Tail,1/43152,0.0023%
+988,Slither Wing,1/43152,0.0023%
+10335,Sun Vivillon,1/43152,0.0023%
+10323,Tundra Vivillon,1/43152,0.0023%
+666,Vivillon,1/43152,0.0023%
+1009,Walking Wake,1/43152,0.0023%
+10118,10% Zygarde,1/57536,0.0017%
+10111,Alolan Golem,1/57536,0.0017%
+144,Articuno,1/57536,0.0017%
+482,Azelf,1/57536,0.0017%
+10272,Bloodmoon Ursaluna,1/57536,0.0017%
+898,Calyrex,1/57536,0.0017%
+1004,Chi-Yu,1/57536,0.0017%
+1002,Chien-Pao,1/57536,0.0017%
+638,Cobalion,1/57536,0.0017%
+10120,Complete Zygarde,1/57536,0.0017%
+10275,Cornerstone Mask Ogerpon,1/57536,0.0017%
+790,Cosmoem,1/57536,0.0017%
+789,Cosmog,1/57536,0.0017%
+488,Cresselia,1/57536,0.0017%
+483,Dialga,1/57536,0.0017%
+905,Enamorus,1/57536,0.0017%
+244,Entei,1/57536,0.0017%
+890,Eternatus,1/57536,0.0017%
+10169,Galarian Slowking,1/57536,0.0017%
+649,Genesect,1/57536,0.0017%
+487,Giratina,1/57536,0.0017%
+896,Glastrier,1/57536,0.0017%
+383,Groudon,1/57536,0.0017%
+10274,Hearthflame Mask Ogerpon,1/57536,0.0017%
+485,Heatran,1/57536,0.0017%
+20005,High-speed Flight Configuration Genesect,1/57536,0.0017%
+250,Ho-Oh,1/57536,0.0017%
+891,Kubfu,1/57536,0.0017%
+382,Kyogre,1/57536,0.0017%
+646,Kyurem,1/57536,0.0017%
+645,Landorus,1/57536,0.0017%
+380,Latias,1/57536,0.0017%
+381,Latios,1/57536,0.0017%
+249,Lugia,1/57536,0.0017%
+792,Lunala,1/57536,0.0017%
+481,Mesprit,1/57536,0.0017%
+150,Mewtwo,1/57536,0.0017%
+146,Moltres,1/57536,0.0017%
+866,Mr. Rime,1/57536,0.0017%
+800,Necrozma,1/57536,0.0017%
+1017,Ogerpon,1/57536,0.0017%
+484,Palkia,1/57536,0.0017%
+243,Raikou,1/57536,0.0017%
+10183,Rapid Strike Urshifu,1/57536,0.0017%
+384,Rayquaza,1/57536,0.0017%
+378,Regice,1/57536,0.0017%
+895,Regidrago,1/57536,0.0017%
+894,Regieleki,1/57536,0.0017%
+486,Regigigas,1/57536,0.0017%
+377,Regirock,1/57536,0.0017%
+379,Registeel,1/57536,0.0017%
+643,Reshiram,1/57536,0.0017%
+791,Solgaleo,1/57536,0.0017%
+897,Spectrier,1/57536,0.0017%
+245,Suicune,1/57536,0.0017%
+787,Tapu Bulu,1/57536,0.0017%
+788,Tapu Fini,1/57536,0.0017%
+785,Tapu Koko,1/57536,0.0017%
+786,Tapu Lele,1/57536,0.0017%
+1024,Terapagos,1/57536,0.0017%
+10276,Terastal Terapagos,1/57536,0.0017%
+639,Terrakion,1/57536,0.0017%
+642,Thundurus,1/57536,0.0017%
+1003,Ting-Lu,1/57536,0.0017%
+641,Tornadus,1/57536,0.0017%
+772,Type: Null,1/57536,0.0017%
+892,Urshifu,1/57536,0.0017%
+480,Uxie,1/57536,0.0017%
+640,Virizion,1/57536,0.0017%
+10273,Wellspring Mask Ogerpon,1/57536,0.0017%
+1001,Wo-Chien,1/57536,0.0017%
+717,Yveltal,1/57536,0.0017%
+888,Zacian,1/57536,0.0017%
+889,Zamazenta,1/57536,0.0017%
+145,Zapdos,1/57536,0.0017%
+644,Zekrom,1/57536,0.0017%
+718,Zygarde,1/57536,0.0017%
+10240,Partner Eevee,1/69043,0.0014%
+10239,Partner Pikachu,1/69043,0.0014%
+201,Unown,1/86304,0.0012%
+10278,Unown A,1/86304,0.0012%
+10279,Unown B,1/86304,0.0012%
+10280,Unown C,1/86304,0.0012%
+10281,Unown D,1/86304,0.0012%
+10282,Unown E,1/86304,0.0012%
+10303,Unown Exclamation,1/86304,0.0012%
+10283,Unown G,1/86304,0.0012%
+10284,Unown H,1/86304,0.0012%
+10285,Unown I,1/86304,0.0012%
+10286,Unown J,1/86304,0.0012%
+10287,Unown K,1/86304,0.0012%
+10288,Unown L,1/86304,0.0012%
+10289,Unown M,1/86304,0.0012%
+10290,Unown N,1/86304,0.0012%
+10291,Unown O,1/86304,0.0012%
+10292,Unown P,1/86304,0.0012%
+10293,Unown Q,1/86304,0.0012%
+10304,Unown Question,1/86304,0.0012%
+10294,Unown R,1/86304,0.0012%
+10295,Unown S,1/86304,0.0012%
+10296,Unown T,1/86304,0.0012%
+10297,Unown U,1/86304,0.0012%
+10298,Unown V,1/86304,0.0012%
+10299,Unown W,1/86304,0.0012%
+10300,Unown X,1/86304,0.0012%
+10301,Unown Y,1/86304,0.0012%
+10302,Unown Z,1/86304,0.0012%
+806,Blacephalon,1/115072,0.0009%
+794,Buzzwole,1/115072,0.0009%
+797,Celesteela,1/115072,0.0009%
+10338,Fancy Vivillon,1/115072,0.0009%
+799,Guzzlord,1/115072,0.0009%
+798,Kartana,1/115072,0.0009%
+804,Naganadel,1/115072,0.0009%
+10346,Neutral Xerneas,1/115072,0.0009%
+793,Nihilego,1/115072,0.0009%
+795,Pheromosa,1/115072,0.0009%
+803,Poipole,1/115072,0.0009%
+10339,Poké Ball Vivillon,1/115072,0.0009%
+805,Stakataka,1/115072,0.0009%
+716,Xerneas,1/115072,0.0009%
+796,Xurkitree,1/115072,0.0009%
+10269,Drive Mode Miraidon,1/172608,0.0006%
+10166,Galarian Articuno,1/172608,0.0006%
+10168,Galarian Moltres,1/172608,0.0006%
+10167,Galarian Zapdos,1/172608,0.0006%
+10271,Glide Mode Miraidon,1/172608,0.0006%
+10267,Gliding Build Koraidon,1/172608,0.0006%
+1007,Koraidon,1/172608,0.0006%
+1008,Miraidon,1/172608,0.0006%
+10265,Sprinting Build Koraidon,1/172608,0.0006%
+493,Arceus,1/345217,0.0003%
+10347,Bug Arceus,1/345217,0.0003%
+10364,Bug Silvally,1/345217,0.0003%
+10348,Dark Arceus,1/345217,0.0003%
+10365,Dark Silvally,1/345217,0.0003%
+10349,Dragon Arceus,1/345217,0.0003%
+10366,Dragon Silvally,1/345217,0.0003%
+10350,Electric Arceus,1/345217,0.0003%
+10367,Electric Silvally,1/345217,0.0003%
+10363,Fairy Arceus,1/345217,0.0003%
+10380,Fairy Silvally,1/345217,0.0003%
+10351,Fighting Arceus,1/345217,0.0003%
+10368,Fighting Silvally,1/345217,0.0003%
+10352,Fire Arceus,1/345217,0.0003%
+10369,Fire Silvally,1/345217,0.0003%
+10353,Flying Arceus,1/345217,0.0003%
+10370,Flying Silvally,1/345217,0.0003%
+10354,Ghost Arceus,1/345217,0.0003%
+10371,Ghost Silvally,1/345217,0.0003%
+10355,Grass Arceus,1/345217,0.0003%
+10372,Grass Silvally,1/345217,0.0003%
+10356,Ground Arceus,1/345217,0.0003%
+10373,Ground Silvally,1/345217,0.0003%
+10357,Ice Arceus,1/345217,0.0003%
+10374,Ice Silvally,1/345217,0.0003%
+0,MissingNo.,1/345217,0.0003%
+10358,Poison Arceus,1/345217,0.0003%
+10375,Poison Silvally,1/345217,0.0003%
+10359,Psychic Arceus,1/345217,0.0003%
+10376,Psychic Silvally,1/345217,0.0003%
+10360,Rock Arceus,1/345217,0.0003%
+10377,Rock Silvally,1/345217,0.0003%
+773,Silvally,1/345217,0.0003%
+10361,Steel Arceus,1/345217,0.0003%
+10378,Steel Silvally,1/345217,0.0003%
+10362,Water Arceus,1/345217,0.0003%
+10379,Water Silvally,1/345217,0.0003%
