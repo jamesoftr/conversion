@@ -35,6 +35,7 @@ async def main():
     await db.ensure_indexes()              # create query indexes (idempotent)
     async with bot:
         await bot.load_extension("cogs.help_cog")
+        await bot.load_extension("cogs.prank_cog")
         await bot.load_extension("cogs.repeat_cog")
         await bot.load_extension("cogs.admin_cog")
         await bot.load_extension("cogs.worldcup_cog")
