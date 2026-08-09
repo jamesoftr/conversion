@@ -46,16 +46,15 @@ Commands (prefix, assumes bot already has a command_prefix like "!")
 
 Battle flow / UI
 -----------------
-All Pokemon battle at LEVEL 100. Each turn is posted as three separate
-messages, paced 3 seconds apart so it reads cleanly instead of one
-crowded message:
+All Pokemon battle at LEVEL 100. Each turn (after the first) is posted as
+two separate messages, paced 3 seconds apart:
 
-    1. The battle scene image on its own (both Pokemon with an HP bar
-       above their sprite).
-    2. A plain text-only embed recapping the previous turn's results
-       (damage dealt, switches, etc.) — skipped on turn 1.
-    3. The actionable panel: the same image again, alongside each
-       trainer's current Pokemon/HP and a single view containing:
+    1. A plain text-only embed recapping the previous turn's results
+       (damage dealt, switches, etc.) — skipped on turn 1, since there's
+       nothing to recap yet.
+    2. The actionable panel: a battle-scene image (both Pokemon with an
+       HP bar above their sprite) alongside each trainer's current
+       Pokemon/HP and a single view containing:
 
     • a move dropdown for trainer 1
     • a move dropdown for trainer 2
@@ -241,16 +240,23 @@ PRIORITY_MOVE_MIN_POWER = 40  # e.g. Quick Attack/Aqua Jet/Mach Punch-tier or be
 
 
 async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4) -> list:
-    """Return the `count` best damage-dealing moves this Pokemon can learn
-    (status moves excluded), deterministically — never a random sample.
+    """Return `count` damage-dealing moves for this Pokemon (status moves
+    excluded), deterministically — never a random sample.
 
-    Priority is given to raw power, EXCEPT that if the Pokemon can learn a
-    decent-power priority move (priority > 0, power >= PRIORITY_MOVE_MIN_POWER
-    — e.g. Quick Attack, Aqua Jet, Mach Punch, Extreme Speed, Sucker Punch),
-    the single best one of those is guaranteed a slot even if it wouldn't
-    otherwise crack the top `count` by power alone. Priority moves are
-    strategically important (they can strike first regardless of Speed), so
-    a pure power sort would frequently throw them away.
+    Selection favors *type coverage* over pure power: at most one move per
+    elemental type is picked while a still-unused type has a candidate
+    available, so a Pokemon's moveset isn't four same-type moves when it
+    knows better than that. Only once every learnable type has already
+    been used does it fall back to a second (or third...) move of a type
+    already picked — so a genuinely mono-type-movepool Pokemon still ends
+    up with a full set instead of empty slots.
+
+    On top of that, if the Pokemon can learn a decent-power priority move
+    (priority > 0, power >= PRIORITY_MOVE_MIN_POWER — e.g. Quick Attack,
+    Aqua Jet, Mach Punch, Extreme Speed, Sucker Punch), the single best one
+    of those is guaranteed a slot even if it wouldn't otherwise crack the
+    top picks by power/coverage alone. It also counts toward the
+    type-coverage pass, so it won't get displaced by a same-type duplicate.
     """
     pool = data.get("move_pool", [])
     if not pool:
@@ -272,6 +278,8 @@ async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4)
     candidates.sort(key=lambda m: m.get("power") or 0, reverse=True)
 
     chosen = []
+    used_types = set()
+
     priority_candidates = [
         m for m in candidates
         if m.get("priority", 0) > 0 and (m.get("power") or 0) >= PRIORITY_MOVE_MIN_POWER
@@ -279,7 +287,22 @@ async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4)
     if priority_candidates:
         best_priority = max(priority_candidates, key=lambda m: m.get("power") or 0)
         chosen.append(best_priority)
+        used_types.add(best_priority.get("type"))
 
+    # Pass 1: strongest move of each not-yet-used type, for coverage.
+    for mv in candidates:
+        if len(chosen) >= count:
+            break
+        if mv in chosen:
+            continue
+        mtype = mv.get("type")
+        if mtype in used_types:
+            continue
+        chosen.append(mv)
+        used_types.add(mtype)
+
+    # Pass 2: ran out of distinct types before filling every slot — top up
+    # with the next-strongest remaining moves regardless of type.
     for mv in candidates:
         if len(chosen) >= count:
             break
@@ -1035,18 +1058,6 @@ class Battle:
                              inline=False)
         return embed, file
 
-    async def build_scene_embed(self, turn: int):
-        """Just the battle scene image on its own — the first thing posted
-        each turn, before results and the action panel, so the reveal
-        reads as a clean beat instead of one crowded message."""
-        file = await render_battle_scene(self.cog.session, self.t2.active, self.t1.active)
-        embed = discord.Embed(title=f"⚔️ Turn {turn}", colour=0x3498DB)
-        if file is not None:
-            embed.set_image(url="attachment://battle.png")
-        else:
-            embed.description = "⚠️ Pillow isn't installed — image disabled."
-        return embed, file
-
     def build_results_embed(self, last_summary: str) -> discord.Embed:
         """Plain text-only embed recapping the previous turn's damage,
         switches, etc. — sent on its own between the scene reveal and the
@@ -1124,19 +1135,13 @@ class Battle:
         last_summary: Optional[str] = None
 
         while self.t1.alive_team and self.t2.alive_team:
-            # 1) Reveal the battle scene image on its own — a clean beat
-            #    before the results and action panel land.
-            scene_embed, scene_file = await self.build_scene_embed(turn)
-            await self._send_embed(scene_embed, scene_file)
-            await asyncio.sleep(3)
-
-            # 2) Recap last turn's results as a plain text-only embed
+            # 1) Recap last turn's results as a plain text-only embed
             #    (nothing to recap yet on turn 1).
             if last_summary:
                 await self.channel.send(embed=self.build_results_embed(last_summary))
                 await asyncio.sleep(3)
 
-            # 3) The actual actionable panel: image + trainer info + move
+            # 2) The actual actionable panel: image + trainer info + move
             #    dropdowns, same as before.
             panel = BattlePanel(self.t1, self.t2)
             embed, file = await self.build_embed(turn, None)
@@ -1172,7 +1177,12 @@ class Battle:
                 action = panel.actions.get(trainer.user.id)
                 if action and action[0] == "move":
                     move = trainer.active.moves[action[1]]
-                    movers.append((trainer, opponent, move))
+                    # Capture the actual Pokemon object whose move this is,
+                    # not just the trainer — trainer.active_idx can change
+                    # mid-loop below (a forced switch after an earlier
+                    # mover's KO), and we need to tell a stale queued move
+                    # apart from a freshly-sent-in replacement.
+                    movers.append((trainer, opponent, move, trainer.active))
             # Priority moves always go first; ties within the same priority
             # bracket go to the faster Pokemon (using effective, stage-
             # boosted Speed); true speed ties are broken randomly each turn
@@ -1185,7 +1195,13 @@ class Battle:
                 reverse=True,
             )
 
-            for attacker, defender, move in movers:
+            for attacker, defender, move, acting_pokemon in movers:
+                if attacker.active is not acting_pokemon:
+                    # attacker's original Pokemon already fainted and was
+                    # forced-switched out by an earlier, faster mover this
+                    # same turn — the replacement only came in to fill the
+                    # empty slot, it doesn't also get to attack this turn.
+                    continue
                 if attacker.active.fainted or defender.active.fainted:
                     continue
                 move_name = move["name"]
