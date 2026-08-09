@@ -30,10 +30,42 @@ Commands (prefix, assumes bot already has a command_prefix like "!")
     Cancels a pending challenge/team-build, or force-ends an active battle
     in the current channel.
 
-During a battle, each round both trainers get a move-select View (60s to
-choose, otherwise a random move is auto-picked). A fainted Pokemon triggers
-a switch-select View for its owner. Only one pending challenge / battle is
-allowed per channel at a time.
+Battle flow / UI
+-----------------
+All Pokemon battle at LEVEL 100. Each round, ONE message is posted per
+turn: a battle-scene image (both Pokemon with an HP bar rendered directly
+above their sprite), the turn number, the *previous* turn's damage
+results, and a single view containing:
+
+    • a move dropdown for trainer 1
+    • a move dropdown for trainer 2
+    • a shared "🔄 Switch" button
+    • a shared "⏭️ Pass Turn" button
+
+Both dropdowns/buttons live on the same message (so the whole channel can
+watch the battle), but each component checks `interaction.user` before
+acting — a trainer can only ever submit their OWN action. Clicking Switch
+opens a private (ephemeral) menu of your remaining team that only you can
+see, so your bench isn't spoiled for your opponent while you're deciding.
+
+Each trainer locks in exactly ONE action per turn: a move, a switch, or a
+pass. Switching *consumes the whole turn* — a Pokemon that switches in
+never also attacks that same turn. This is a deliberate fix for a bug in
+the previous version where a switched-in Pokemon could end up executing a
+move nobody selected; because switch and move are now mutually exclusive
+per-turn actions resolved from a single locked-in dict (instead of two
+separate sequential prompts), there's no code path left that can attack
+with a Pokemon the trainer didn't choose to attack with. If a trainer
+doesn't respond before the turn timer runs out, they no longer get a
+*random* move — they auto-use their strongest available move instead
+(moves are pre-sorted by power), and the panel says so.
+
+How the 4 moves are chosen
+---------------------------
+`pick_moves()` fetches every damage-dealing (non-status) move in a
+Pokemon's learnable move pool, sorts them by base power, and keeps the
+top 4. So each Pokemon always has its four hardest-hitting moves
+available — not a random sample.
 """
 
 import asyncio
@@ -63,7 +95,8 @@ def _col():
 
 
 POKEAPI = "https://pokeapi.co/api/v2"
-LEVEL = 50
+LEVEL = 100
+TURN_TIMEOUT = 90  # seconds each turn's panel stays open
 
 # ── Type effectiveness chart (attacking type -> {defending type: multiplier}) ──
 # Only non-1.0 entries listed; anything missing defaults to 1.0.
@@ -173,15 +206,24 @@ async def get_move_data(session: aiohttp.ClientSession, name: str) -> Optional[d
 
 
 async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4) -> list:
-    pool = data.get("move_pool", [])[:]
-    random.shuffle(pool)
-    chosen = []
-    for name in pool:
-        if len(chosen) >= count:
-            break
-        mv = await get_move_data(session, name)
-        if mv and mv.get("power") and mv.get("damage_class") != "status":
-            chosen.append(mv)
+    """Return the `count` highest-power damage-dealing moves this Pokemon can
+    learn (status moves excluded). Deterministic — always the strongest
+    moves available, never a random sample."""
+    pool = data.get("move_pool", [])
+    if not pool:
+        tackle = await get_move_data(session, "tackle")
+        return [tackle] if tackle else [FALLBACK_MOVE]
+
+    results = await asyncio.gather(
+        *[get_move_data(session, name) for name in pool],
+        return_exceptions=True,
+    )
+    candidates = [
+        mv for mv in results
+        if isinstance(mv, dict) and mv.get("power") and mv.get("damage_class") != "status"
+    ]
+    candidates.sort(key=lambda m: m.get("power") or 0, reverse=True)
+    chosen = candidates[:count]
     if not chosen:
         tackle = await get_move_data(session, "tackle")
         chosen = [tackle] if tackle else [FALLBACK_MOVE]
@@ -303,31 +345,36 @@ async def _fetch_sprite(session: aiohttp.ClientSession, url: str):
         return None
 
 
-def _draw_hp_plate(draw: "ImageDraw.ImageDraw", x: int, y: int, w: int,
-                    name: str, hp: int, max_hp: int):
-    draw.rounded_rectangle([x, y, x + w, y + 54], radius=10,
+def _draw_hp_bar_above(draw: "ImageDraw.ImageDraw", center_x: float, sprite_top_y: float,
+                        name: str, hp: int, max_hp: int, width: int = 190):
+    """Draws a compact name+HP-bar plate directly above a sprite's position."""
+    bar_h = 10
+    plate_h = 40
+    x = int(center_x - width / 2)
+    x = max(6, min(x, CANVAS_W - width - 6))
+    y = int(max(4, sprite_top_y - plate_h - 6))
+
+    draw.rounded_rectangle([x, y, x + width, y + plate_h], radius=9,
                             fill=(255, 255, 255, 235), outline=(40, 40, 40, 255), width=2)
-    draw.text((x + 12, y + 6), f"{name.title()}  Lv.{LEVEL}",
-               font=_font(16), fill=(20, 20, 20, 255))
-    bar_x, bar_y, bar_w, bar_h = x + 12, y + 30, w - 24, 12
+    draw.text((x + 10, y + 4), f"{name.title()}  Lv.{LEVEL}",
+               font=_font(14), fill=(20, 20, 20, 255))
+
+    bar_x, bar_y, bar_w = x + 10, y + 22, width - 20
     draw.rounded_rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h],
-                            radius=6, fill=(90, 90, 90, 255))
+                            radius=5, fill=(90, 90, 90, 255))
     frac = max(hp, 0) / max_hp if max_hp else 0
     fill_w = int(bar_w * frac)
     if fill_w > 0:
         draw.rounded_rectangle([bar_x, bar_y, bar_x + fill_w, bar_y + bar_h],
-                                radius=6, fill=_hp_color(frac))
-    hp_text = f"{max(hp, 0)}/{max_hp}"
-    draw.text((bar_x + bar_w - 6, bar_y + 14), hp_text, font=_font(13, bold=False),
-               fill=(20, 20, 20, 255), anchor="ra")
+                                radius=5, fill=_hp_color(frac))
 
 
 async def render_battle_scene(session: aiohttp.ClientSession,
                                opponent_pokemon: "BattlePokemon",
                                player_pokemon: "BattlePokemon") -> Optional[discord.File]:
     """Classic side-on battle scene: opponent upper-right facing player,
-    player's pokemon lower-left (mirrored) facing opponent, HP bars in green
-    (shifting to yellow/red as HP drops) above each."""
+    player's pokemon lower-left (mirrored) facing opponent, with an HP bar
+    rendered directly above each sprite (name, Lv.100, colour-shifting bar)."""
     if not PIL_OK:
         return None
 
@@ -342,21 +389,28 @@ async def render_battle_scene(session: aiohttp.ClientSession,
     opp_sprite = await _fetch_sprite(session, opponent_pokemon.sprite)
     player_sprite = await _fetch_sprite(session, player_pokemon.sprite)
 
+    opp_pos = (int(CANVAS_W * 0.60), 68)
+    player_pos = (int(CANVAS_W * 0.06), CANVAS_H - 232)
+
+    opp_w = 96 * SPRITE_SCALE
     if opp_sprite:
         opp_sprite = opp_sprite.resize(
             (opp_sprite.width * SPRITE_SCALE, opp_sprite.height * SPRITE_SCALE), Image.NEAREST)
-        canvas.alpha_composite(opp_sprite, (int(CANVAS_W * 0.60), 46))
+        canvas.alpha_composite(opp_sprite, opp_pos)
+        opp_w = opp_sprite.width
 
+    player_w = 96 * SPRITE_SCALE
     if player_sprite:
         player_sprite = ImageOps.mirror(player_sprite)
         player_sprite = player_sprite.resize(
             (player_sprite.width * SPRITE_SCALE, player_sprite.height * SPRITE_SCALE), Image.NEAREST)
-        canvas.alpha_composite(player_sprite, (int(CANVAS_W * 0.06), CANVAS_H - 260))
+        canvas.alpha_composite(player_sprite, player_pos)
+        player_w = player_sprite.width
 
-    _draw_hp_plate(draw, 24, 20, 260, opponent_pokemon.name,
-                    opponent_pokemon.hp, opponent_pokemon.max_hp)
-    _draw_hp_plate(draw, CANVAS_W - 284, CANVAS_H - 140, 260, player_pokemon.name,
-                    player_pokemon.hp, player_pokemon.max_hp)
+    _draw_hp_bar_above(draw, opp_pos[0] + opp_w / 2, opp_pos[1],
+                        opponent_pokemon.name, opponent_pokemon.hp, opponent_pokemon.max_hp)
+    _draw_hp_bar_above(draw, player_pos[0] + player_w / 2, player_pos[1],
+                        player_pokemon.name, player_pokemon.hp, player_pokemon.max_hp)
 
     buf = io.BytesIO()
     canvas.convert("RGB").save(buf, format="PNG")
@@ -429,53 +483,15 @@ class ChallengeView(discord.ui.View):
             content=f"❌ {self.opponent.mention} declined the challenge.", view=None)
 
 
-# ── UI: move selection ──────────────────────────────────────────────────────
+# ── UI: forced switch after a faint (visible message, restricted to owner) ──
 
-class MoveButton(discord.ui.Button):
-    def __init__(self, label: str, idx: int):
-        super().__init__(label=label[:80], style=discord.ButtonStyle.primary)
-        self.idx = idx
-
-    async def callback(self, interaction: discord.Interaction):
-        view: "MoveView" = self.view
-        for item in view.children:
-            item.disabled = True
-        await interaction.response.edit_message(view=view)
-        if not view.future.done():
-            view.future.set_result(self.idx)
-        view.stop()
-
-
-class MoveView(discord.ui.View):
-    def __init__(self, trainer: Trainer, future: asyncio.Future):
-        super().__init__(timeout=60)
-        self.trainer = trainer
-        self.future = future
-        for i, mv in enumerate(trainer.active.moves):
-            power = mv.get("power") or "-"
-            label = f"{mv['name'].replace('-', ' ').title()} ({power} pow)"
-            self.add_item(MoveButton(label, i))
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.trainer.user.id:
-            await interaction.response.send_message("Not your move to make.", ephemeral=True)
-            return False
-        return True
-
-    async def on_timeout(self):
-        if not self.future.done():
-            self.future.set_result(random.randrange(len(self.trainer.active.moves)))
-
-
-# ── UI: switch selection ────────────────────────────────────────────────────
-
-class SwitchButton(discord.ui.Button):
+class ForcedSwitchButton(discord.ui.Button):
     def __init__(self, label: str, idx: int):
         super().__init__(label=label[:80], style=discord.ButtonStyle.secondary)
         self.idx = idx
 
     async def callback(self, interaction: discord.Interaction):
-        view: "SwitchView" = self.view
+        view: "ForcedSwitchView" = self.view
         for item in view.children:
             item.disabled = True
         await interaction.response.edit_message(view=view)
@@ -484,7 +500,11 @@ class SwitchButton(discord.ui.Button):
         view.stop()
 
 
-class SwitchView(discord.ui.View):
+class ForcedSwitchView(discord.ui.View):
+    """Shown publicly (mentioning the trainer) when their active Pokemon
+    faints mid-turn and they must send out a replacement. Visible to
+    everyone, but only the owning trainer can press a button."""
+
     def __init__(self, trainer: Trainer, future: asyncio.Future):
         super().__init__(timeout=60)
         self.trainer = trainer
@@ -493,7 +513,7 @@ class SwitchView(discord.ui.View):
         for i, p in enumerate(trainer.team):
             if not p.fainted:
                 self._alive_indices.append(i)
-                self.add_item(SwitchButton(p.name.title(), i))
+                self.add_item(ForcedSwitchButton(p.name.title(), i))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.trainer.user.id:
@@ -506,6 +526,207 @@ class SwitchView(discord.ui.View):
             self.future.set_result(self._alive_indices[0])
 
 
+# ── UI: private (ephemeral) switch menu, opened from the turn panel ────────
+
+class SwitchSelectView(discord.ui.View):
+    """Sent as an ephemeral response when a trainer presses the panel's
+    Switch button — only that trainer ever sees this menu, so their bench
+    isn't revealed to the opponent while they decide."""
+
+    def __init__(self, panel: "BattlePanel", trainer: Trainer, bench: list):
+        super().__init__(timeout=TURN_TIMEOUT)
+        self.panel = panel
+        self.trainer = trainer
+        select = discord.ui.Select(
+            placeholder="Choose your next Pokémon",
+            options=[
+                discord.SelectOption(
+                    label=f"{p.name.title()} (Lv.{LEVEL})",
+                    description=f"{p.hp}/{p.max_hp} HP",
+                    value=str(i),
+                )
+                for i, p in bench
+            ],
+        )
+        select.callback = self._callback
+        self.add_item(select)
+        self._select = select
+
+    async def _callback(self, interaction: discord.Interaction):
+        idx = int(self._select.values[0])
+        for item in self.children:
+            item.disabled = True
+        mon = self.trainer.team[idx].name.title()
+        await interaction.response.edit_message(
+            content=f"✅ You'll send out **{mon}** this turn (this uses your whole turn).",
+            view=self,
+        )
+        await self.panel.set_action(interaction, self.trainer, ("switch", idx),
+                                     via_separate_message=True)
+        self.stop()
+
+
+# ── UI: the single combined turn panel ──────────────────────────────────────
+
+class MoveSelect(discord.ui.Select):
+    def __init__(self, trainer: Trainer, panel: "BattlePanel", row: int):
+        self.trainer = trainer
+        self.panel = panel
+        options = [
+            discord.SelectOption(
+                label=mv["name"].replace("-", " ").title()[:100],
+                description=f"{mv.get('type', 'normal').title()} • "
+                            f"{mv.get('power') or '—'} power"[:100],
+                value=str(i),
+            )
+            for i, mv in enumerate(trainer.active.moves)
+        ]
+        super().__init__(
+            placeholder=f"{trainer.user.display_name}: choose {trainer.active.name.title()}'s move",
+            min_values=1, max_values=1, options=options, row=row,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.trainer.user.id:
+            await interaction.response.send_message(
+                "🚫 That's not your Pokémon to command.", ephemeral=True)
+            return
+        if self.trainer.user.id in self.panel.actions:
+            await interaction.response.send_message(
+                "You've already locked in your action this turn.", ephemeral=True)
+            return
+        idx = int(self.values[0])
+        await self.panel.set_action(interaction, self.trainer, ("move", idx))
+
+
+class SwitchButton(discord.ui.Button):
+    def __init__(self, panel: "BattlePanel"):
+        super().__init__(label="Switch", emoji="🔄", style=discord.ButtonStyle.secondary, row=2)
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        trainer = self.panel.trainer_for(interaction.user.id)
+        if trainer is None:
+            await interaction.response.send_message("You're not part of this battle.", ephemeral=True)
+            return
+        if trainer.user.id in self.panel.actions:
+            await interaction.response.send_message(
+                "You've already locked in your action this turn.", ephemeral=True)
+            return
+        bench = [(i, p) for i, p in enumerate(trainer.team)
+                 if not p.fainted and i != trainer.active_idx]
+        if not bench:
+            await interaction.response.send_message(
+                "You have no other healthy Pokémon to switch to!", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            "Choose a Pokémon to switch in — only you can see this menu:",
+            view=SwitchSelectView(self.panel, trainer, bench),
+            ephemeral=True,
+        )
+
+
+class PassButton(discord.ui.Button):
+    def __init__(self, panel: "BattlePanel"):
+        super().__init__(label="Pass Turn", emoji="⏭️", style=discord.ButtonStyle.secondary, row=2)
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        trainer = self.panel.trainer_for(interaction.user.id)
+        if trainer is None:
+            await interaction.response.send_message("You're not part of this battle.", ephemeral=True)
+            return
+        if trainer.user.id in self.panel.actions:
+            await interaction.response.send_message(
+                "You've already locked in your action this turn.", ephemeral=True)
+            return
+        await self.panel.set_action(interaction, trainer, ("pass", None))
+
+
+class BattlePanel(discord.ui.View):
+    """The one combined view posted each turn: two move dropdowns (one per
+    trainer), a shared Switch button, and a shared Pass Turn button.
+
+    Each trainer locks in exactly one action per turn, stored in
+    `self.actions[user_id] = (kind, value)` where kind is "move", "switch",
+    or "pass". Switch and move are mutually exclusive for a given trainer
+    in a given turn — a switched-in Pokemon is never also made to attack,
+    which is what previously caused the "random move on switch" bug.
+    """
+
+    def __init__(self, t1: Trainer, t2: Trainer):
+        super().__init__(timeout=TURN_TIMEOUT)
+        self.t1 = t1
+        self.t2 = t2
+        self.actions: dict = {}
+        self.event = asyncio.Event()
+        self.message: Optional[discord.Message] = None
+
+        self.move_select_t1 = MoveSelect(t1, self, row=0)
+        self.move_select_t2 = MoveSelect(t2, self, row=1)
+        self.add_item(self.move_select_t1)
+        self.add_item(self.move_select_t2)
+        self.add_item(SwitchButton(self))
+        self.add_item(PassButton(self))
+
+    def trainer_for(self, user_id: int) -> Optional[Trainer]:
+        if user_id == self.t1.user.id:
+            return self.t1
+        if user_id == self.t2.user.id:
+            return self.t2
+        return None
+
+    def _select_for(self, trainer: Trainer) -> MoveSelect:
+        return self.move_select_t1 if trainer is self.t1 else self.move_select_t2
+
+    async def set_action(self, interaction: discord.Interaction, trainer: Trainer,
+                          action: tuple, via_separate_message: bool = False):
+        self.actions[trainer.user.id] = action
+        verb = {"move": "chose a move", "switch": "will switch", "pass": "passed"}[action[0]]
+        sel = self._select_for(trainer)
+        sel.disabled = True
+        sel.placeholder = f"{trainer.user.display_name} {verb} ✅"
+
+        ready = len(self.actions) == 2
+        if ready:
+            for item in self.children:
+                item.disabled = True
+
+        if via_separate_message:
+            # This action came from the private ephemeral switch menu, not
+            # from a component on the panel message itself — edit the panel
+            # message directly instead of trying to ack this interaction.
+            if self.message is not None:
+                try:
+                    await self.message.edit(view=self)
+                except discord.HTTPException:
+                    pass
+        else:
+            await interaction.response.edit_message(view=self)
+
+        if ready and not self.event.is_set():
+            self.event.set()
+
+    async def on_timeout(self):
+        # Fill in any missing action with that trainer's strongest move
+        # (moves are pre-sorted by power) instead of a random one.
+        for trainer in (self.t1, self.t2):
+            if trainer.user.id not in self.actions:
+                self.actions[trainer.user.id] = ("move", 0)
+                sel = self._select_for(trainer)
+                sel.disabled = True
+                sel.placeholder = f"{trainer.user.display_name} ran out of time — auto-used strongest move"
+        for item in self.children:
+            item.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+        if not self.event.is_set():
+            self.event.set()
+
+
 # ── Battle runner ────────────────────────────────────────────────────────────
 
 class Battle:
@@ -516,66 +737,50 @@ class Battle:
         self.t1 = t1
         self.t2 = t2
 
-    @staticmethod
-    def _hp_bar(hp: int, max_hp: int, length: int = 12) -> str:
-        filled = int(length * max(hp, 0) / max_hp) if max_hp else 0
-        return "🟩" * filled + "⬜" * (length - filled)
+    async def build_embed(self, turn: int, last_summary: Optional[str],
+                           final: bool = False, winner: Optional[Trainer] = None):
+        file = await render_battle_scene(self.cog.session, self.t2.active, self.t1.active)
 
-    def status_embed(self) -> discord.Embed:
-        """Text-only fallback, used if Pillow isn't installed."""
-        e = discord.Embed(title="⚔️ Battle Status", colour=0x3498DB)
+        embed = discord.Embed(
+            title=("🏆 Battle Complete" if final else f"⚔️ Turn {turn}"),
+            colour=(0xF1C40F if final else 0x3498DB),
+        )
+        if winner is not None:
+            embed.description = f"**{winner.user.display_name} wins the battle!**"
+        if last_summary:
+            embed.add_field(name="📋 Last Turn's Results", value=last_summary[:1024], inline=False)
+
         for t in (self.t1, self.t2):
             p = t.active
-            bar = self._hp_bar(p.hp, p.max_hp)
-            e.add_field(
-                name=f"{t.user.display_name} — {p.name.title()} (Lv.{LEVEL})",
-                value=f"{bar}  {p.hp}/{p.max_hp} HP\nRemaining: {len(t.alive_team)}/{len(t.team)}",
-                inline=False,
+            embed.add_field(
+                name=t.user.display_name,
+                value=(f"{p.name.title()} (Lv.{LEVEL})\n"
+                       f"❤️ {p.hp}/{p.max_hp} HP\n"
+                       f"Team remaining: {len(t.alive_team)}/{len(t.team)}"),
+                inline=True,
             )
-        return e
 
-    async def send_status(self):
-        """Posts the battle scene image (opponent-vs-player, HP bars), or
-        falls back to a text embed if Pillow isn't available."""
-        image = await render_battle_scene(self.cog.session, self.t2.active, self.t1.active)
-        if image is None:
-            await self.channel.send(embed=self.status_embed())
-            return
-        caption = (f"**{self.t1.user.display_name}**'s {self.t1.active.name.title()} "
-                   f"vs **{self.t2.user.display_name}**'s {self.t2.active.name.title()}")
-        await self.channel.send(content=caption, file=image)
+        if file is not None:
+            embed.set_image(url="attachment://battle.png")
+        else:
+            embed.add_field(name="⚠️ Note", value="Pillow isn't installed — image disabled.",
+                             inline=False)
+        return embed, file
 
-    async def get_move_choice(self, trainer: Trainer) -> int:
-        future = asyncio.get_event_loop().create_future()
-        view = MoveView(trainer, future)
-        await self.channel.send(
-            f"{trainer.user.mention}, choose **{trainer.active.name.title()}**'s move:",
-            view=view,
-        )
-        return await future
+    async def _send_embed(self, embed: discord.Embed, file: Optional[discord.File], **kwargs):
+        if file is not None:
+            return await self.channel.send(embed=embed, file=file, **kwargs)
+        return await self.channel.send(embed=embed, **kwargs)
 
-    async def get_switch_choice(self, trainer: Trainer) -> int:
-        future = asyncio.get_event_loop().create_future()
-        view = SwitchView(trainer, future)
-        await self.channel.send(
-            f"{trainer.user.mention}, **{trainer.active.name.title()}** fainted! "
-            f"Choose your next Pokemon:",
-            view=view,
-        )
-        return await future
-
-    async def _execute_move(self, attacker: Trainer, defender: Trainer, move: dict):
+    def _execute_move(self, attacker: Trainer, defender: Trainer, move: dict) -> str:
         acc = move.get("accuracy")
         if acc is not None and random.uniform(0, 100) > acc:
-            await self.channel.send(
-                f"❌ {attacker.active.name.title()}'s "
-                f"{move['name'].replace('-', ' ').title()} missed!"
-            )
-            return
+            return (f"❌ {attacker.active.name.title()}'s "
+                    f"{move['name'].replace('-', ' ').title()} missed!")
         dmg, eff, crit = calc_damage(attacker.active, defender.active, move)
         defender.active.hp = max(0, defender.active.hp - dmg)
         text = (f"➡️ {attacker.active.name.title()} used "
-                f"**{move['name'].replace('-', ' ').title()}**! ({dmg} dmg)")
+                f"**{move['name'].replace('-', ' ').title()}**! (**{dmg}** dmg)")
         if crit:
             text += " 💫 Critical hit!"
         if eff > 1:
@@ -584,43 +789,88 @@ class Battle:
             text += " It's not very effective..."
         elif eff == 0:
             text += " It had no effect!"
-        await self.channel.send(text)
+        return text
+
+    async def get_forced_switch(self, trainer: Trainer) -> int:
+        future = asyncio.get_event_loop().create_future()
+        view = ForcedSwitchView(trainer, future)
+        await self.channel.send(
+            f"{trainer.user.mention}, **{trainer.active.name.title()}** fainted! "
+            f"Choose your next Pokemon:",
+            view=view,
+        )
+        return await future
 
     async def run(self):
-        await self.send_status()
+        await self.channel.send(
+            f"⚔️ **Battle start!** {self.t1.user.mention} vs {self.t2.user.mention} "
+            f"— all Pokémon are Level {LEVEL}."
+        )
+
+        turn = 1
+        last_summary: Optional[str] = None
+
         while self.t1.alive_team and self.t2.alive_team:
-            idx1, idx2 = await asyncio.gather(
-                self.get_move_choice(self.t1), self.get_move_choice(self.t2)
+            panel = BattlePanel(self.t1, self.t2)
+            embed, file = await self.build_embed(turn, last_summary)
+            msg = await self._send_embed(
+                embed, file,
+                content=f"{self.t1.user.mention} {self.t2.user.mention} — choose your action.",
+                view=panel,
             )
-            move1 = self.t1.active.moves[idx1]
-            move2 = self.t2.active.moves[idx2]
+            panel.message = msg
 
-            order = [(self.t1, self.t2, move1), (self.t2, self.t1, move2)]
-            order.sort(key=lambda o: (o[2].get("priority", 0), o[0].active.spe), reverse=True)
+            await panel.event.wait()
 
-            for attacker, defender, move in order:
+            lines: list = []
+
+            # 1) Switches resolve first and consume the whole turn for that
+            #    trainer — a switched-in Pokemon never also attacks.
+            for trainer in (self.t1, self.t2):
+                action = panel.actions.get(trainer.user.id)
+                if action and action[0] == "switch":
+                    old_name = trainer.active.name.title()
+                    trainer.active_idx = action[1]
+                    lines.append(
+                        f"🔄 {trainer.user.display_name} withdrew {old_name} and sent out "
+                        f"**{trainer.active.name.title()}**!"
+                    )
+                elif action and action[0] == "pass":
+                    lines.append(f"⏭️ {trainer.user.display_name} passed the turn.")
+
+            # 2) Moves resolve in priority/speed order. Only trainers whose
+            #    locked-in action was "move" attack this turn.
+            movers = []
+            for trainer, opponent in ((self.t1, self.t2), (self.t2, self.t1)):
+                action = panel.actions.get(trainer.user.id)
+                if action and action[0] == "move":
+                    move = trainer.active.moves[action[1]]
+                    movers.append((trainer, opponent, move))
+            movers.sort(key=lambda o: (o[2].get("priority", 0), o[0].active.spe), reverse=True)
+
+            for attacker, defender, move in movers:
                 if attacker.active.fainted or defender.active.fainted:
                     continue
-                await self._execute_move(attacker, defender, move)
+                lines.append(self._execute_move(attacker, defender, move))
                 if defender.active.fainted:
-                    await self.channel.send(f"💥 {defender.active.name.title()} fainted!")
+                    lines.append(f"💥 {defender.active.name.title()} fainted!")
                     if defender.alive_team:
-                        new_idx = await self.get_switch_choice(defender)
+                        new_idx = await self.get_forced_switch(defender)
                         defender.active_idx = new_idx
-                        await self.channel.send(
+                        lines.append(
                             f"{defender.user.display_name} sent out "
-                            f"{defender.active.name.title()}!"
+                            f"**{defender.active.name.title()}**!"
                         )
-                        await self.send_status()
-                    else:
-                        break
 
-            if not self.t1.alive_team or not self.t2.alive_team:
-                break
-            await self.send_status()
+            last_summary = "\n".join(lines) if lines else "No actions were taken."
+            turn += 1
 
         winner = self.t1 if self.t1.alive_team else self.t2
         loser = self.t2 if winner is self.t1 else self.t1
+
+        final_embed, final_file = await self.build_embed(turn, last_summary,
+                                                           final=True, winner=winner)
+        await self._send_embed(final_embed, final_file)
         await self.channel.send(
             f"🏆 **{winner.user.display_name} wins the battle!** GG {loser.user.mention}."
         )
@@ -672,7 +922,7 @@ class BattleCog(commands.Cog, name="Battle"):
         view._channel_id = ctx.channel.id
         await ctx.send(
             f"⚔️ {ctx.author.mention} has challenged {opponent.mention} to a "
-            f"**{fmt}** battle ({count} pokemon each)! "
+            f"**{fmt}** battle ({count} pokemon each, Level {LEVEL})! "
             f"{opponent.mention}, do you accept?",
             view=view,
         )
