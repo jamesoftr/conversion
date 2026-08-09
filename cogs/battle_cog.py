@@ -239,6 +239,7 @@ async def get_move_data(session: aiohttp.ClientSession, name: str) -> Optional[d
 
 
 PRIORITY_MOVE_MIN_POWER = 40  # e.g. Quick Attack/Aqua Jet/Mach Punch-tier or better
+STAB_MOVE_MIN_POWER = 70  # guarantee a slot for own-type moves above this power
 
 
 async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4) -> list:
@@ -259,6 +260,12 @@ async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4)
     of those is guaranteed a slot even if it wouldn't otherwise crack the
     top picks by power/coverage alone. It also counts toward the
     type-coverage pass, so it won't get displaced by a same-type duplicate.
+
+    Same idea for STAB: for each of the Pokemon's own types, if it can
+    learn a move of that type with power > STAB_MOVE_MIN_POWER, the
+    strongest such move is guaranteed a slot (e.g. a Water/Psychic Pokemon
+    gets its best >70-power Water move and best >70-power Psychic move
+    locked in, ahead of coverage moves of types it isn't even STAB on).
     """
     pool = data.get("move_pool", [])
     if not pool:
@@ -290,6 +297,25 @@ async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4)
         best_priority = max(priority_candidates, key=lambda m: m.get("power") or 0)
         chosen.append(best_priority)
         used_types.add(best_priority.get("type"))
+
+    # STAB guarantee: for each of the Pokemon's own types, lock in its
+    # strongest move of that type if it's above the power threshold —
+    # ahead of the general coverage pass, so a Water/Psychic Pokemon's
+    # best Water and Psychic moves aren't crowded out by, say, a
+    # higher-power but off-type coverage move.
+    for ptype in data.get("types", []):
+        if len(chosen) >= count:
+            break
+        stab_candidates = [
+            m for m in candidates
+            if m.get("type") == ptype and (m.get("power") or 0) > STAB_MOVE_MIN_POWER
+            and m not in chosen
+        ]
+        if not stab_candidates:
+            continue
+        best_stab = max(stab_candidates, key=lambda m: m.get("power") or 0)
+        chosen.append(best_stab)
+        used_types.add(ptype)
 
     # Pass 1: strongest move of each not-yet-used type, for coverage.
     for mv in candidates:
