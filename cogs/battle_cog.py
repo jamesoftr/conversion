@@ -1875,7 +1875,7 @@ class BattleCog(commands.Cog, name="Battle"):
         else:
             await ctx.send("Nothing to cancel here.")
 
-    @commands.command(name="pf")
+    @commands.command(name="bpf")
     async def battle_profile(self, ctx: commands.Context, *, target: Optional[str] = None):
         """!pf [@user] — shows a trainer's battle record (defaults to you),
         split into PvP results and results against the bot.
