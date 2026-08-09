@@ -26,6 +26,7 @@ Commands — open to everyone, no permission requirement
 /moderation leaderboard  limit                        → top users, last 7 days
 A!mg <hours> [@user]  (alias: A!messagegraph)         → activity chart, any
                                                           custom hour window
+A!mlb [limit]  (alias: A!mleaderboard)                → top users, last 7 days
 
 Graphs are dark-themed. Windows of 48h or less show one bar per hour with an
 hourly-labelled x-axis; longer windows roll up into daily bars.
@@ -249,6 +250,24 @@ async def _render_activity_graph(guild_id: int, target, hours: int):
     return discord.File(buf, filename="activity.png"), total
 
 
+async def _build_leaderboard_embed(guild: discord.Guild, limit: int) -> Optional[discord.Embed]:
+    rows = await _get_leaderboard(guild.id, limit)
+    if not rows:
+        return None
+
+    lines = []
+    for i, row in enumerate(rows, start=1):
+        member = guild.get_member(int(row["_id"]))
+        name = member.display_name if member else f"`{row['_id']}`"
+        lines.append(f"**{i}.** {name} — {row['total']} messages")
+
+    return discord.Embed(
+        title="📊 Message Leaderboard (last 7 days)",
+        description="\n".join(lines),
+        colour=0x5865F2,
+    )
+
+
 class ModerationCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -398,23 +417,23 @@ class ModerationCog(commands.Cog):
         limit = max(1, min(limit or 10, 25))
         await interaction.response.defer()
 
-        rows = await _get_leaderboard(interaction.guild_id, limit)
-        if not rows:
+        embed = await _build_leaderboard_embed(interaction.guild, limit)
+        if embed is None:
             await interaction.followup.send("No tracked activity yet.")
             return
-
-        lines = []
-        for i, row in enumerate(rows, start=1):
-            member = interaction.guild.get_member(int(row["_id"]))
-            name = member.display_name if member else f"`{row['_id']}`"
-            lines.append(f"**{i}.** {name} — {row['total']} messages")
-
-        embed = discord.Embed(
-            title="📊 Message Leaderboard (last 7 days)",
-            description="\n".join(lines),
-            colour=0x5865F2,
-        )
         await interaction.followup.send(embed=embed)
+
+    # ── Prefix command: A!mlb [limit]  (alias A!mleaderboard) ──────────────────
+
+    @commands.command(name="mlb", aliases=["mleaderboard"])
+    async def leaderboard_prefix(self, ctx: commands.Context, limit: Optional[int] = 10):
+        limit = max(1, min(limit or 10, 25))
+
+        embed = await _build_leaderboard_embed(ctx.guild, limit)
+        if embed is None:
+            await ctx.send("No tracked activity yet.")
+            return
+        await ctx.send(embed=embed)
 
 
 async def setup(bot: commands.Bot):
