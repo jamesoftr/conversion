@@ -5,3 +5,4 @@ pymongo>=4.6.0
 jishaku
 Pillow>=10.0.0
 aiohttp>=3.9.0
+matplotlib
