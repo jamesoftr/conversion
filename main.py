@@ -14,7 +14,7 @@ intents.members = True   # ← REQUIRED for on_member_join / on_member_remove
 
 # enable_debug_events=True is REQUIRED for on_socket_raw_receive to fire (converter cog)
 bot = commands.Bot(
-    command_prefix=["a!", "A!", "!"],
+    command_prefix=["s!", "S!", "!"],
     help_command=None,
     intents=intents,
     enable_debug_events=True,
