@@ -104,6 +104,9 @@ async def ensure_indexes() -> None:
     # Welcome cog — one config doc per guild
     await db.welcome_config.create_index([("guild_id", 1)], unique=True)
 
+    # Battle cog — win/loss records, one doc per human trainer per battle
+    await db.battle_results.create_index([("guild_id", 1), ("user_id", 1)])
+
 # ── Catches ───────────────────────────────────────────────────────────────────
 
 async def mark_catch_message_seen(message_id: int) -> bool:
@@ -1319,3 +1322,55 @@ async def reset_user_loans(guild_id: int, user_id: int) -> int:
         ],
     })
     return result.deleted_count
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW — battle_cog win/loss tracking
+# One doc per human trainer per finished battle. Split by vs_ai so PvP
+# results and "vs the bot" results can be reported separately (see !pf).
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def record_battle_result(guild_id: int, user_id: int, vs_ai: bool, won: bool) -> None:
+    """
+    Record the outcome of one finished battle for one human trainer.
+    Called once per human participant — a PvP battle logs one doc for each
+    side, a `!battle @<bot>` fight logs a single doc for the human side.
+    """
+    await get_db().battle_results.insert_one({
+        "guild_id":  guild_id,
+        "user_id":   user_id,
+        "vs_ai":     vs_ai,
+        "won":       won,
+        "timestamp": datetime.now(timezone.utc),
+    })
+
+
+async def get_battle_stats(guild_id: int, user_id: int) -> dict:
+    """
+    Returns a trainer's all-time battle record, split into PvP ("human")
+    and vs-the-bot ("ai") buckets:
+      {
+        "human_total": int, "human_wins": int, "human_losses": int,
+        "ai_total":    int, "ai_wins":    int, "ai_losses":    int,
+      }
+    """
+    db = get_db()
+    pipeline = [
+        {"$match": {"guild_id": guild_id, "user_id": user_id}},
+        {"$group": {
+            "_id":   "$vs_ai",
+            "total": {"$sum": 1},
+            "wins":  {"$sum": {"$cond": ["$won", 1, 0]}},
+        }},
+    ]
+    stats = {
+        "human_total": 0, "human_wins": 0, "human_losses": 0,
+        "ai_total":    0, "ai_wins":    0, "ai_losses":    0,
+    }
+    async for r in db.battle_results.aggregate(pipeline):
+        total, wins = r["total"], r["wins"]
+        prefix = "ai" if r["_id"] else "human"
+        stats[f"{prefix}_total"]  = total
+        stats[f"{prefix}_wins"]   = wins
+        stats[f"{prefix}_losses"] = total - wins
+    return stats
