@@ -28,8 +28,10 @@ Commands (prefix, assumes bot already has a command_prefix like "!")
     - custom  → both trainers then build their own team with `!battle add`.
 
 !battle @<bot's name> random [count] [>min<max]
+!battle ai [count] [>min<max]
     Battle the bot itself instead of another user — no Accept/Decline step,
-    the battle starts immediately. The bot plays its own team with an AI
+    the battle starts immediately. `ai` (or `bot`) works as a shorthand for
+    mentioning the bot by name. The bot plays its own team with an AI
     that calculates the expected damage of every available move against the
     opponent's current active Pokemon — factoring in STAB, type
     effectiveness, and effective stats — and attacks with whichever move
@@ -44,7 +46,14 @@ Commands (prefix, assumes bot already has a command_prefix like "!")
 
 !battle cancel
     Cancels a pending challenge/team-build, or force-ends an active battle
-    in the current channel.
+    in the current channel with no winner/loser recorded.
+
+!battle forfeit
+    Forfeits the active battle in this channel — unlike `!battle cancel`,
+    the other trainer is declared the winner and stats/Elo are recorded
+    normally. A trainer who misses 2 turns in a row (no action before the
+    90s timer) is also auto-forfeited, so a stalled/AFK trainer can't
+    stall a battle forever.
 
 !pf [@user]
     Shows a trainer's all-time battle record (defaults to yourself),
@@ -55,6 +64,20 @@ Commands (prefix, assumes bot already has a command_prefix like "!")
     Shows the BOT's own global record — total battles, wins, and losses
     across every `!battle @<bot>` fight anyone in the server has played
     against it. (The flip side of everyone's individual "Vs AI" stats.)
+
+!elo [@user]
+    Shows a trainer's Elo battle rating (starts at 1000). A win nets more
+    rating than a loss costs, and losses cost more the higher your own
+    rating climbs — but a loss is never worth less than a small floor.
+    Rated for every battle, including against the bot.
+
+!elo lb
+    Shows the server's Elo leaderboard (top 10), bot included.
+
+Rematch
+    After a battle ends, a "🔁 Rematch" button is posted that recreates
+    the exact same matchup/format/team size/BST filter. Against another
+    human both trainers must click it; against the bot, just the human.
 
 Battle mechanics
 -----------------
@@ -72,8 +95,14 @@ models:
     Absorb/Flash Fire (type immunities, the absorb ones healing instead),
     Intimidate (Attack drop on switch-in), Guts (Atk boost while
     statused, turns burn's penalty into a bonus), and Sturdy (survives an
-    OHKO from full HP with 1 HP). Held items, weather, and the rest of
-    the ability roster are still out of scope.
+    OHKO from full HP with 1 HP). Weather and the rest of the ability
+    roster are still out of scope.
+  • Held items — each Pokemon has a chance to be holding one. Kept
+    deliberately mild/sustain-only (no damage or crit boosters, no OHKO
+    survival items): Leftovers (heals 1/16 max HP every end of turn),
+    Oran Berry / Sitrus Berry (one-shot heal — 1/8 or 1/4 max HP — the
+    first time HP drops to half or below), and Shell Bell (heals the
+    holder 1/8 of any damage it deals).
   • The `!battle @<bot>` AI weighs moves by accuracy-discounted expected
     damage (not just raw power) and can voluntarily switch out of a bad
     matchup, not just when forced by a faint.
@@ -150,9 +179,71 @@ def _col():
     return _db.get_db()
 
 
+# ── Elo rating ────────────────────────────────────────────────────────────
+# Stored in its own collection (battle_elo), keyed by "<guild_id>:<user_id>",
+# independent of the existing win/loss stats in db.py.
+DEFAULT_ELO = 1000
+ELO_K_WIN = 24        # base gain on a win
+ELO_K_LOSS = 16       # base cost of a loss — smaller than the win gain, so
+                       # winning nets more than losing costs on average
+ELO_MIN_LOSS_PENALTY = 6   # a loss always costs at least this much
+ELO_MAX_DELTA = 40         # ...but never swings more than this in one battle
+ELO_FLOOR = 100
+
+
+async def _get_elo(guild_id: int, user_id: int) -> int:
+    doc = await _col().battle_elo.find_one({"_id": f"{guild_id}:{user_id}"})
+    return doc["elo"] if doc else DEFAULT_ELO
+
+
+async def _set_elo(guild_id: int, user_id: int, elo: int):
+    await _col().battle_elo.update_one(
+        {"_id": f"{guild_id}:{user_id}"},
+        {"$set": {"guild_id": guild_id, "user_id": user_id, "elo": elo}},
+        upsert=True,
+    )
+
+
+def _elo_delta(my_elo: int, opp_elo: int, won: bool) -> int:
+    """Rating change for one side of a result.
+
+    - Standard elo expected-score scaling: beating a higher-rated opponent
+      nets more, losing to a lower-rated one costs more.
+    - A win nets more than a loss costs at the same rating (K_WIN > K_LOSS)
+      — winning is rewarded more than losing is punished.
+    - Losses get progressively harsher the higher your OWN rating climbs
+      (staying at the top has to be earned), but a loss is never trivial —
+      it always costs at least ELO_MIN_LOSS_PENALTY, even for a huge
+      underdog.
+    """
+    expected = 1 / (1 + 10 ** ((opp_elo - my_elo) / 400))
+    if won:
+        raw = ELO_K_WIN * (1 - expected)
+        delta = max(5, round(raw))
+    else:
+        raw = ELO_K_LOSS * expected
+        raw += max(0, my_elo - DEFAULT_ELO) / 100  # higher rating -> losses sting more
+        delta = max(ELO_MIN_LOSS_PENALTY, round(raw))
+    return min(ELO_MAX_DELTA, int(delta))
+
+
+async def apply_elo_result(guild_id: int, winner_id: int, loser_id: int):
+    """Updates and returns (new_winner_elo, winner_delta, new_loser_elo, loser_delta)."""
+    w_elo = await _get_elo(guild_id, winner_id)
+    l_elo = await _get_elo(guild_id, loser_id)
+    w_delta = _elo_delta(w_elo, l_elo, won=True)
+    l_delta = _elo_delta(l_elo, w_elo, won=False)
+    new_w = w_elo + w_delta
+    new_l = max(ELO_FLOOR, l_elo - l_delta)
+    await _set_elo(guild_id, winner_id, new_w)
+    await _set_elo(guild_id, loser_id, new_l)
+    return new_w, w_delta, new_l, -(l_elo - new_l)
+
+
 POKEAPI = "https://pokeapi.co/api/v2"
 LEVEL = 100
 TURN_TIMEOUT = 90  # seconds each turn's panel stays open
+AFK_FORFEIT_STRIKES = 2  # consecutive missed turns before a trainer auto-forfeits
 
 # ── Type effectiveness chart (attacking type -> {defending type: multiplier}) ──
 # Only non-1.0 entries listed; anything missing defaults to 1.0.
@@ -550,6 +641,18 @@ ABILITY_IMMUNITY = {
 # Of those immunities, which ones heal the holder instead of just no-selling.
 ABILITY_ABSORB_HEAL = {"water-absorb", "volt-absorb"}
 
+# ── Held items ──────────────────────────────────────────────────────────────
+# Deliberately "simple"/sustain-only — no damage boosters, crit boosters, or
+# OHKO-survival items (Focus Sash/Band) since those swing damage output
+# directly and would be too strong given the rest of the engine doesn't
+# model item counterplay. Each Pokemon has a chance to be holding one.
+HELD_ITEMS = ["leftovers", "oran-berry", "sitrus-berry", "shell-bell"]
+ITEM_ASSIGN_CHANCE = 0.45
+
+
+def item_label(item: Optional[str]) -> str:
+    return item.replace("-", " ").title() if item else ""
+
 
 def type_multiplier_for(move_type: str, defender: "BattlePokemon") -> float:
     """Like type_multiplier(), but folds in ability-based type immunities
@@ -622,6 +725,11 @@ class BattlePokemon:
         # high-impact abilities are actually modeled — see KNOWN_ABILITIES.
         abilities = data.get("abilities") or []
         self.ability: Optional[str] = random.choice(abilities) if abilities else None
+        # Held item — see HELD_ITEMS. item_used tracks one-shot berries
+        # (Oran/Sitrus) so they can only trigger once per battle; Leftovers
+        # and Shell Bell aren't consumable so item_used never applies to them.
+        self.item: Optional[str] = random.choice(HELD_ITEMS) if random.random() < ITEM_ASSIGN_CHANCE else None
+        self.item_used: bool = False
 
     @property
     def fainted(self) -> bool:
@@ -1063,6 +1171,66 @@ class ChallengeView(discord.ui.View):
             content=f"❌ {self.opponent.mention} declined the challenge.", view=None)
 
 
+# ── UI: post-battle rematch ──────────────────────────────────────────────────
+
+class RematchView(discord.ui.View):
+    """Posted after a battle ends. Against another human, BOTH trainers
+    must click before the rematch starts; against the bot, only the human
+    needs to. Reuses the exact format/team size/BST filter of the battle
+    that just finished."""
+
+    def __init__(self, cog: "BattleCog", channel: discord.TextChannel,
+                 p1: discord.abc.User, p2: discord.abc.User,
+                 fmt: str, count: int, bst_filter: tuple, vs_bot: bool):
+        super().__init__(timeout=60)
+        self.cog = cog
+        self.channel = channel
+        self.p1 = p1
+        self.p2 = p2
+        self.fmt = fmt
+        self.count = count
+        self.bst_filter = bst_filter
+        self.vs_bot = vs_bot
+        self.agreed: set = set()
+        self.agreed_needed = {p1.id} if vs_bot else {p1.id, p2.id}
+        self.message: Optional[discord.Message] = None
+
+    @discord.ui.button(label="🔁 Rematch", style=discord.ButtonStyle.primary)
+    async def rematch(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in self.agreed_needed:
+            await interaction.response.send_message(
+                "Only the trainers from this battle can start a rematch.", ephemeral=True)
+            return
+        if self.channel.id in self.cog.pending or self.channel.id in self.cog.active_battles:
+            await interaction.response.send_message(
+                "There's already a challenge or battle active in this channel.", ephemeral=True)
+            return
+        self.agreed.add(interaction.user.id)
+        if not self.agreed_needed <= self.agreed:
+            await interaction.response.send_message(
+                f"✅ {interaction.user.display_name} wants a rematch — waiting on the other trainer.",
+            )
+            return
+        for item in self.children:
+            item.disabled = True
+        self.stop()
+        try:
+            await interaction.response.edit_message(view=self)
+        except discord.HTTPException:
+            pass
+        await self.cog.start_rematch(self.channel, self.p1, self.p2,
+                                      self.fmt, self.count, self.bst_filter, self.vs_bot)
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+
 # ── UI: forced switch after a faint (visible message, restricted to owner) ──
 
 class ForcedSwitchButton(discord.ui.Button):
@@ -1251,6 +1419,7 @@ class BattlePanel(discord.ui.View):
         self.actions: dict = {}
         self.event = asyncio.Event()
         self.message: Optional[discord.Message] = None
+        self.timed_out_ids: set = set()
 
         # A bot-controlled trainer gets no dropdown and no wait — its move
         # is decided immediately via bot_choose_action() instead of a
@@ -1319,6 +1488,10 @@ class BattlePanel(discord.ui.View):
         # Fill in any missing action with that trainer's strongest move that
         # still has PP left (moves are pre-sorted by power) instead of a
         # random one — or Struggle (-1) if every move is out of PP.
+        self.timed_out_ids = {
+            trainer.user.id for trainer in (self.t1, self.t2)
+            if trainer.user.id not in self.actions
+        }
         for trainer in (self.t1, self.t2):
             if trainer.user.id not in self.actions:
                 usable = [i for i, mv in enumerate(trainer.active.moves) if mv.get("current_pp", 1) > 0]
@@ -1343,11 +1516,24 @@ class BattlePanel(discord.ui.View):
 
 class Battle:
     def __init__(self, cog: "BattleCog", channel: discord.TextChannel,
-                 t1: Trainer, t2: Trainer):
+                 t1: Trainer, t2: Trainer, fmt: str = "random", count: int = 3,
+                 bst_filter: tuple = (None, None), vs_bot: bool = False):
         self.cog = cog
         self.channel = channel
         self.t1 = t1
         self.t2 = t2
+        # Kept only so a "🔁 Rematch" button after the battle can recreate
+        # the same matchup/format/team size without the trainers having to
+        # retype the whole challenge.
+        self.fmt = fmt
+        self.count = count
+        self.bst_filter = bst_filter
+        self.vs_bot = vs_bot
+        # Forfeit / AFK tracking.
+        self.forfeited_trainer: Optional[Trainer] = None
+        self.forfeit_reason: Optional[str] = None
+        self.current_panel: Optional["BattlePanel"] = None
+        self.afk_strikes: dict = {}
 
     async def build_embed(self, turn: int, last_summary: Optional[str],
                            final: bool = False, winner: Optional[Trainer] = None):
@@ -1367,7 +1553,8 @@ class Battle:
                 mon_lines = []
                 for p in t.team:
                     marker = "💀" if p.fainted else "❤️"
-                    mon_lines.append(f"{marker} {p.name.title()} — {p.hp}/{p.max_hp} HP")
+                    item_suffix = f" 🎒 {item_label(p.item)}" if p.item else ""
+                    mon_lines.append(f"{marker} {p.name.title()} — {p.hp}/{p.max_hp} HP{item_suffix}")
                 embed.add_field(
                     name=t.user.display_name,
                     value="\n".join(mon_lines)[:1024],
@@ -1375,10 +1562,12 @@ class Battle:
                 )
             else:
                 p = t.active
+                item_line = f"🎒 {item_label(p.item)}\n" if p.item else ""
                 embed.add_field(
                     name=t.user.display_name,
                     value=(f"{p.name.title()} (Lv.{LEVEL})\n"
                            f"❤️ {p.hp}/{p.max_hp} HP\n"
+                           f"{item_line}"
                            f"Team remaining: {len(t.alive_team)}/{len(t.team)}"),
                     inline=True,
                 )
@@ -1442,7 +1631,9 @@ class Battle:
                            and dmg >= def_mon.hp)
             if sturdy_save:
                 dmg = def_mon.hp - 1
+            prev_def_hp = def_mon.hp
             def_mon.hp = max(0, def_mon.hp - dmg)
+            actual_dealt = prev_def_hp - def_mon.hp
 
             text = f"➡️ {atk_mon.name.title()} used **{move_name}**! (**{dmg}** dmg)"
             if crit:
@@ -1456,6 +1647,15 @@ class Battle:
             lines.append(text)
             if sturdy_save:
                 lines.append(f"🛡️ {def_mon.name.title()} hung on with Sturdy!")
+
+            # Shell Bell: heals the attacker for a slice of the damage it
+            # just dealt. Mild by design (1/8), and skipped if the
+            # attacker fainted from its own recoil the same instant.
+            if atk_mon.item == "shell-bell" and actual_dealt > 0 and not atk_mon.fainted:
+                healed = min(max(1, actual_dealt // 8), atk_mon.max_hp - atk_mon.hp)
+                if healed > 0:
+                    atk_mon.hp += healed
+                    lines.append(f"🔔 {atk_mon.name.title()}'s Shell Bell restored **{healed}** HP!")
         else:
             lines.append(f"➡️ {atk_mon.name.title()} used **{move_name}**!")
 
@@ -1494,6 +1694,37 @@ class Battle:
                 lines.append(f"😤 {mon.name.title()}'s Intimidate lowered {opp_mon.name.title()}'s Attack!")
         return lines
 
+    def _check_berry(self, mon: BattlePokemon) -> list:
+        """One-shot recovery berries (Oran/Sitrus) — trigger the first time
+        a Pokemon drops to half HP or below, then are consumed."""
+        if mon.fainted or mon.item_used or mon.item not in ("oran-berry", "sitrus-berry"):
+            return []
+        if mon.hp > mon.max_hp // 2:
+            return []
+        mon.item_used = True
+        heal_frac = 8 if mon.item == "oran-berry" else 4
+        healed = min(max(1, mon.max_hp // heal_frac), mon.max_hp - mon.hp)
+        if healed <= 0:
+            return []
+        mon.hp += healed
+        label = "Oran Berry" if mon.item == "oran-berry" else "Sitrus Berry"
+        return [f"🍒 {mon.name.title()}'s {label} restored **{healed}** HP!"]
+
+    def _apply_item_end_of_turn(self, mon: BattlePokemon) -> list:
+        """Leftovers heals a little every end of turn; also re-checks the
+        recovery berries in case status damage dropped a Pokemon below
+        half HP this turn."""
+        lines = []
+        if mon.fainted:
+            return lines
+        if mon.item == "leftovers":
+            healed = min(max(1, mon.max_hp // 16), mon.max_hp - mon.hp)
+            if healed > 0:
+                mon.hp += healed
+                lines.append(f"🍃 {mon.name.title()}'s Leftovers restored **{healed}** HP!")
+        lines.extend(self._check_berry(mon))
+        return lines
+
     async def get_forced_switch(self, trainer: Trainer) -> int:
         if trainer.is_bot:
             # No UI to show — just send out its next healthy Pokemon.
@@ -1526,7 +1757,7 @@ class Battle:
         last_summary: Optional[str] = None
         pending_switches: list = []  # trainers whose active fainted last turn
 
-        while self.t1.alive_team and self.t2.alive_team:
+        while self.t1.alive_team and self.t2.alive_team and self.forfeited_trainer is None:
             # 1) Recap last turn's results as a plain text-only embed
             #    (nothing to recap yet on turn 1).
             if last_summary:
@@ -1547,9 +1778,16 @@ class Battle:
                 await self.channel.send(msg)
             pending_switches = []
 
+            # A forfeit may have landed while there was no panel open (e.g.
+            # during the recap pause or a forced-switch prompt) — stop here
+            # instead of dealing out a whole extra turn nobody will use.
+            if self.forfeited_trainer is not None:
+                break
+
             # 2) The actual actionable panel: image + trainer info + move
             #    dropdowns, same as before.
             panel = BattlePanel(self.t1, self.t2)
+            self.current_panel = panel
             embed, file = await self.build_embed(turn, None)
             msg = await self._send_embed(
                 embed, file,
@@ -1559,6 +1797,34 @@ class Battle:
             panel.message = msg
 
             await panel.event.wait()
+            self.current_panel = None
+
+            # `!battle forfeit` may have fired while this turn's panel was
+            # open — stop immediately rather than resolving the turn.
+            if self.forfeited_trainer is not None:
+                break
+
+            # AFK tracking: a trainer who misses AFK_FORFEIT_STRIKES turns
+            # in a row (no action submitted before TURN_TIMEOUT) auto-
+            # forfeits instead of the bot auto-piloting them indefinitely.
+            for trainer in (self.t1, self.t2):
+                if trainer.is_bot:
+                    continue
+                if trainer.user.id in panel.timed_out_ids:
+                    strikes = self.afk_strikes.get(trainer.user.id, 0) + 1
+                    self.afk_strikes[trainer.user.id] = strikes
+                    if strikes >= AFK_FORFEIT_STRIKES:
+                        self.forfeited_trainer = trainer
+                        self.forfeit_reason = "inactivity"
+                else:
+                    self.afk_strikes[trainer.user.id] = 0
+
+            if self.forfeited_trainer is not None:
+                await self.channel.send(
+                    f"🏳️ {self.forfeited_trainer.user.display_name} missed "
+                    f"{AFK_FORFEIT_STRIKES} turns in a row and auto-forfeited the battle."
+                )
+                break
 
             lines: list = []
 
@@ -1657,6 +1923,12 @@ class Battle:
                     if defender.alive_team:
                         pending_switches.append(defender)
 
+                # One-shot recovery berries can trigger off any HP loss
+                # this move caused — the attacker's own recoil or the
+                # defender taking damage.
+                lines.extend(self._check_berry(attacker.active))
+                lines.extend(self._check_berry(defender.active))
+
             # 3) End-of-turn residual status damage (burn/poison chip
             #    damage). Skipped for a Pokemon that already fainted this
             #    turn — matches the mainline games, no double-dipping.
@@ -1676,35 +1948,42 @@ class Battle:
                     lines.append(f"💥 {mon.name.title()} fainted!")
                     if trainer.alive_team:
                         pending_switches.append(trainer)
+                    continue
+                # Leftovers heal / recovery-berry re-check for end-of-turn
+                # status chip damage.
+                lines.extend(self._apply_item_end_of_turn(mon))
 
             last_summary = "\n".join(lines) if lines else "No actions were taken."
             turn += 1
 
-        # Battle's over — if the winner's own active happened to faint on
-        # this final turn too (a mutual KO), silently slot in their next
-        # healthy Pokemon so the final embed doesn't show a fainted mon.
-        for trainer in pending_switches:
-            if trainer.alive_team:
-                for i, p in enumerate(trainer.team):
-                    if not p.fainted:
-                        trainer.active_idx = i
-                        break
+        if self.forfeited_trainer is not None:
+            loser = self.forfeited_trainer
+            winner = self.t2 if loser is self.t1 else self.t1
+        else:
+            # Battle's over the normal way — if the winner's own active
+            # happened to faint on this final turn too (a mutual KO),
+            # silently slot in their next healthy Pokemon so the final
+            # embed doesn't show a fainted mon.
+            for trainer in pending_switches:
+                if trainer.alive_team:
+                    for i, p in enumerate(trainer.team):
+                        if not p.fainted:
+                            trainer.active_idx = i
+                            break
 
-        winner = self.t1 if self.t1.alive_team else self.t2
-        loser = self.t2 if winner is self.t1 else self.t1
+            winner = self.t1 if self.t1.alive_team else self.t2
+            loser = self.t2 if winner is self.t1 else self.t1
 
         # Show the final turn's damage recap as its own embed first — same
         # as every other turn's flow — before the "Battle Complete" embed.
-        if last_summary:
+        # (Nothing to show on a forfeit before any turn resolved.)
+        if last_summary and self.forfeited_trainer is None:
             await self.channel.send(embed=self.build_results_embed(last_summary))
             await asyncio.sleep(3)
 
         final_embed, final_file = await self.build_embed(turn, None,
                                                            final=True, winner=winner)
         await self._send_embed(final_embed, final_file)
-        await self.channel.send(
-            f"🏆 {winner.user.mention} wins the battle! GG {loser.user.display_name}."
-        )
 
         # Record win/loss for every human trainer in the battle (skip the
         # bot's own side — `!pf` tracks people, not the bot). vs_ai is True
@@ -1721,7 +2000,42 @@ class Battle:
             except Exception:
                 pass  # never let stat logging break the battle's end
 
+        # Elo — rated for every battle, including vs the bot (the bot has
+        # its own rating too, so `!elo lb` reflects how tough it's been).
+        elo_note = ""
+        try:
+            new_w, w_delta, new_l, l_delta = await apply_elo_result(
+                guild_id, winner.user.id, loser.user.id
+            )
+            elo_note = (
+                f" ({winner.user.display_name} {'+' if w_delta >= 0 else ''}{w_delta} → **{new_w}**, "
+                f"{loser.user.display_name} {l_delta} → **{new_l}**)"
+            )
+        except Exception:
+            pass  # never let rating logging break the battle's end
+
+        await self.channel.send(
+            f"🏆 {winner.user.mention} wins the battle! GG {loser.user.display_name}.{elo_note}"
+        )
+
         self.cog.active_battles.pop(self.channel.id, None)
+
+        # Offer a quick rematch — same matchup, format, team size, and BST
+        # filter as this battle. Only the two trainers involved can use it.
+        if self.vs_bot:
+            human = self.t2.user if self.t1.is_bot else self.t1.user
+            rematch_view = RematchView(
+                self.cog, self.channel, human, self.cog.bot.user,
+                self.fmt, self.count, self.bst_filter, self.vs_bot,
+            )
+        else:
+            rematch_view = RematchView(
+                self.cog, self.channel, self.t1.user, self.t2.user,
+                self.fmt, self.count, self.bst_filter, self.vs_bot,
+            )
+        rematch_view.message = await self.channel.send(
+            "Want to go again?", view=rematch_view
+        )
 
 
 # ── Cog ───────────────────────────────────────────────────────────────────
@@ -1742,7 +2056,7 @@ class BattleCog(commands.Cog, name="Battle"):
 
     @commands.group(name="battle", invoke_without_command=True)
     async def battle(self, ctx: commands.Context,
-                      opponent: Optional[discord.Member] = None,
+                      opponent: Optional[str] = None,
                       fmt: str = "random", count: int = 3,
                       *, bst_filter: Optional[str] = None):
         if opponent is None:
@@ -1750,9 +2064,21 @@ class BattleCog(commands.Cog, name="Battle"):
                 "Usage: `!battle @user [random|custom] [count 1-6] [>min<max]`\n"
                 "The `>min<max` part is optional and filters `random` teams by "
                 "base stat total, e.g. `!battle @user random 3 >590<700`. You "
-                "can also battle me directly: `!battle @<my name> random 3 >550`."
+                "can also battle me directly: `!battle ai [count] [>min<max]` "
+                "(or `!battle @<my name> random 3 >550`)."
             )
             return
+
+        if opponent.strip().lower() in ("ai", "bot", self.bot.user.name.lower()):
+            opponent = self.bot.user
+        else:
+            try:
+                opponent = await commands.MemberConverter().convert(ctx, opponent)
+            except commands.BadArgument:
+                await ctx.send(f"Couldn't find a member matching `{opponent}`. "
+                                f"Try `!battle @user` or `!battle ai`.")
+                return
+
         if opponent.id == ctx.author.id:
             await ctx.send("Pick a real opponent (not yourself).")
             return
@@ -1789,7 +2115,8 @@ class BattleCog(commands.Cog, name="Battle"):
             for _ in range(count):
                 t1.team.append(await build_random_pokemon(self.session, min_total, max_total))
                 t2.team.append(await build_random_pokemon(self.session, min_total, max_total))
-            battle = Battle(self, ctx.channel, t1, t2)
+            battle = Battle(self, ctx.channel, t1, t2, fmt=fmt, count=count,
+                             bst_filter=(min_total, max_total), vs_bot=True)
             self.active_battles[ctx.channel.id] = battle
             await battle.run()
             return
@@ -1822,7 +2149,8 @@ class BattleCog(commands.Cog, name="Battle"):
                 t1.team.append(await build_random_pokemon(self.session, min_total, max_total))
                 t2.team.append(await build_random_pokemon(self.session, min_total, max_total))
             self.pending.pop(channel.id, None)
-            battle = Battle(self, channel, t1, t2)
+            battle = Battle(self, channel, t1, t2, fmt=fmt, count=count,
+                             bst_filter=(min_total, max_total), vs_bot=False)
             self.active_battles[channel.id] = battle
             await battle.run()
         else:
@@ -1832,6 +2160,35 @@ class BattleCog(commands.Cog, name="Battle"):
                 f"`!battle add pikachu, charizard, ...` (up to {count} each)\n"
                 f"{challenger.mention} and {opponent.mention}, go ahead."
             )
+
+    async def start_rematch(self, channel, p1, p2, fmt: str, count: int,
+                             bst_filter: tuple, vs_bot: bool):
+        """Recreates the exact matchup a `RematchView` button was clicked
+        for. vs_bot always re-rolls immediately (mirrors the `!battle ai`
+        shortcut); PvP reuses the same pending-challenge machinery as a
+        fresh `!battle @user`, so random re-rolls immediately and custom
+        re-opens the `!battle add` team-build phase."""
+        if channel.id in self.pending or channel.id in self.active_battles:
+            return
+
+        if vs_bot:
+            min_total, max_total = bst_filter
+            filt_note = format_bst_filter(min_total, max_total)
+            await channel.send(f"🔁 Rematch! Rolling random teams — {p1.mention} vs me!{filt_note}")
+            t1 = Trainer(p1)
+            t2 = Trainer(self.bot.user, is_bot=True)
+            for _ in range(count):
+                t1.team.append(await build_random_pokemon(self.session, min_total, max_total))
+                t2.team.append(await build_random_pokemon(self.session, min_total, max_total))
+            battle = Battle(self, channel, t1, t2, fmt=fmt, count=count,
+                             bst_filter=bst_filter, vs_bot=True)
+            self.active_battles[channel.id] = battle
+            await battle.run()
+            return
+
+        await channel.send(f"🔁 Rematch! {p1.mention} vs {p2.mention}.")
+        self.pending[channel.id] = PendingChallenge(p1, p2, fmt, count, bst_filter=bst_filter)
+        await self.start_challenge(channel, p1, p2, fmt, count)
 
     @battle.command(name="add")
     async def battle_add(self, ctx: commands.Context, *, names: str):
@@ -1876,7 +2233,8 @@ class BattleCog(commands.Cog, name="Battle"):
             self.pending.pop(ctx.channel.id, None)
             t1 = Trainer(pending.challenger, team=challenger_team)
             t2 = Trainer(pending.opponent, team=opponent_team)
-            battle = Battle(self, ctx.channel, t1, t2)
+            battle = Battle(self, ctx.channel, t1, t2, fmt=pending.fmt, count=pending.count,
+                             bst_filter=pending.bst_filter, vs_bot=False)
             self.active_battles[ctx.channel.id] = battle
             await ctx.send("Both teams are ready — battle starting!")
             await battle.run()
@@ -1892,61 +2250,5 @@ class BattleCog(commands.Cog, name="Battle"):
         else:
             await ctx.send("Nothing to cancel here.")
 
-    @commands.command(name="bpf")
-    async def battle_profile(self, ctx: commands.Context, *, target: Optional[str] = None):
-        """!pf [@user] — shows a trainer's battle record (defaults to you),
-        split into PvP results and results against the bot.
-        !pf ai — shows the BOT's own global record against everyone in
-        this server (the flip side of everyone's individual Vs AI stats)."""
-        guild_id = ctx.guild.id if ctx.guild else 0
-
-        if target and target.strip().lower() in ("ai", "bot", self.bot.user.name.lower()):
-            stats = await _db.get_ai_global_stats(guild_id)
-            embed = discord.Embed(
-                title=f"🤖 {self.bot.user.display_name}'s Battle Record (vs. everyone)",
-                colour=0xE67E22,
-            )
-            embed.add_field(
-                name="Vs All Trainers",
-                value=(f"Total battles: **{stats['total']}**\n"
-                       f"Win: **{stats['ai_wins']}**\n"
-                       f"Loss: **{stats['ai_losses']}**"),
-                inline=False,
-            )
-            await ctx.send(embed=embed)
-            return
-
-        member = ctx.author
-        if target:
-            try:
-                member = await commands.MemberConverter().convert(ctx, target)
-            except commands.BadArgument:
-                await ctx.send(f"Couldn't find a member matching `{target}`. "
-                                f"Try `!pf @user` or `!pf ai`.")
-                return
-
-        stats = await _db.get_battle_stats(guild_id, member.id)
-
-        embed = discord.Embed(
-            title=f"⚔️ {member.display_name}'s Battle Record",
-            colour=0x3498DB,
-        )
-        embed.add_field(
-            name="Vs Humans",
-            value=(f"Total battles: **{stats['human_total']}**\n"
-                   f"Win: **{stats['human_wins']}**\n"
-                   f"Loss: **{stats['human_losses']}**"),
-            inline=True,
-        )
-        embed.add_field(
-            name="Vs AI",
-            value=(f"Total battles: **{stats['ai_total']}**\n"
-                   f"Win: **{stats['ai_wins']}**\n"
-                   f"Loss: **{stats['ai_losses']}**"),
-            inline=True,
-        )
-        await ctx.send(embed=embed)
-
-
-async def setup(bot: commands.Bot):
-    await bot.add_cog(BattleCog(bot))
+    @battle.command(name="forfeit")
+    async def battle_f
