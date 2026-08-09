@@ -46,6 +46,33 @@ Commands (prefix, assumes bot already has a command_prefix like "!")
     Cancels a pending challenge/team-build, or force-ends an active battle
     in the current channel.
 
+!pf [@user]
+    Shows a trainer's all-time battle record (defaults to yourself),
+    split into "Vs Humans" (PvP) and "Vs AI" (`!battle @<bot's name>`)
+    totals/wins/losses.
+
+Battle mechanics
+-----------------
+On top of accuracy checks, priority/speed turn order, STAB/type
+effectiveness, stat stage changes, and drain/recoil, the engine also
+models:
+  • Status conditions — burn, paralysis, poison, sleep, freeze. A
+    Pokemon's moveset guarantees one reliable status-inducing move
+    (Thunder Wave/Toxic/Will-O-Wisp/Spore-tier) when it learns one, on
+    top of the % chance secondary effects some damaging moves carry
+    (e.g. Thunderbolt's 10% paralyze).
+  • PP — each move tracks its own remaining PP; a Pokemon out of PP on
+    every move is forced to Struggle (25% max-HP recoil).
+  • A handful of common abilities: Levitate/Water Absorb/Volt
+    Absorb/Flash Fire (type immunities, the absorb ones healing instead),
+    Intimidate (Attack drop on switch-in), Guts (Atk boost while
+    statused, turns burn's penalty into a bonus), and Sturdy (survives an
+    OHKO from full HP with 1 HP). Held items, weather, and the rest of
+    the ability roster are still out of scope.
+  • The `!battle @<bot>` AI weighs moves by accuracy-discounted expected
+    damage (not just raw power) and can voluntarily switch out of a bad
+    matchup, not just when forced by a faint.
+
 Battle flow / UI
 -----------------
 All Pokemon battle at LEVEL 100. Each turn (after the first) is posted as
@@ -83,10 +110,12 @@ doesn't respond before the turn timer runs out, they no longer get a
 
 How the 4 moves are chosen
 ---------------------------
-`pick_moves()` fetches every damage-dealing (non-status) move in a
-Pokemon's learnable move pool, sorts them by base power, and keeps the
-top 4. So each Pokemon always has its four hardest-hitting moves
-available — not a random sample.
+`pick_moves()` fetches every move in a Pokemon's learnable move pool and
+keeps the top 4, sorted primarily by base power — so each Pokemon
+generally has its hardest-hitting moves available, not a random sample.
+Ahead of pure power, a few slots are guaranteed if available: the best
+priority move, the best STAB move per type, and one reliable
+status-inducing move (see "Battle mechanics" below).
 """
 
 import asyncio
@@ -165,8 +194,9 @@ FALLBACK_MOVE = {
     "name": "struggle", "power": 50, "accuracy": 100, "pp": 1,
     "type": "normal", "damage_class": "physical", "priority": 0,
     "effect_chance": None, "stat_changes": [], "drain": 0,
-    "target": "selected-pokemon",
+    "target": "selected-pokemon", "ailment": None, "ailment_chance": 0,
 }
+STRUGGLE_RECOIL_FRACTION = 0.25  # Struggle's recoil is 1/4 of the USER's max HP, not damage-based
 
 
 # ── PokeAPI fetch + Mongo cache ─────────────────────────────────────────────
@@ -188,6 +218,11 @@ async def get_pokemon_data(session: aiohttp.ClientSession, ident: str) -> Option
     types = [t["type"]["name"] for t in data["types"]]
     move_pool = [m["move"]["name"] for m in data["moves"]]
     sprite = (data.get("sprites") or {}).get("front_default") or ""
+    # Non-hidden abilities only, kept as a list — BattlePokemon randomly
+    # picks one of these on construction so repeat battles with the same
+    # cached species still see natural variety (e.g. a Gyarados that's
+    # sometimes Intimidate, sometimes Moxie).
+    abilities = [a["ability"]["name"] for a in data.get("abilities", []) if not a.get("is_hidden")]
 
     doc = {
         "_id": key,
@@ -197,6 +232,7 @@ async def get_pokemon_data(session: aiohttp.ClientSession, ident: str) -> Option
         "stats": stats,
         "move_pool": move_pool,
         "sprite": sprite,
+        "abilities": abilities,
     }
     await _col().pokedex_cache.update_one({"_id": key}, {"$set": doc}, upsert=True)
     return doc
@@ -233,6 +269,13 @@ async def get_move_data(session: aiohttp.ClientSession, name: str) -> Optional[d
         ],
         "drain": (data.get("meta") or {}).get("drain", 0),
         "target": (data.get("target") or {}).get("name", "selected-pokemon"),
+        # Status-ailment data (paralysis/sleep/freeze/burn/poison etc.) —
+        # ailment_chance of 0 on a status-class move conventionally means
+        # "always applies" (gated only by the move's own accuracy); a
+        # nonzero chance is a secondary effect on a damage-dealing move
+        # (e.g. Thunderbolt's 10% paralyze).
+        "ailment": ((data.get("meta") or {}).get("ailment") or {}).get("name"),
+        "ailment_chance": (data.get("meta") or {}).get("ailment_chance", 0),
     }
     await _col().move_cache.update_one({"_id": key}, {"$set": doc}, upsert=True)
     return doc
@@ -240,6 +283,7 @@ async def get_move_data(session: aiohttp.ClientSession, name: str) -> Optional[d
 
 PRIORITY_MOVE_MIN_POWER = 40  # e.g. Quick Attack/Aqua Jet/Mach Punch-tier or better
 STAB_MOVE_MIN_POWER = 70  # guarantee a slot for own-type moves above this power
+STATUS_INDUCING_AILMENTS = {"paralysis", "sleep", "freeze", "burn", "poison"}
 
 
 async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4) -> list:
@@ -266,6 +310,12 @@ async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4)
     strongest such move is guaranteed a slot (e.g. a Water/Psychic Pokemon
     gets its best >70-power Water move and best >70-power Psychic move
     locked in, ahead of coverage moves of types it isn't even STAB on).
+
+    One more guarantee: if the Pokemon can learn a reliable status move
+    (Thunder Wave, Toxic, Will-O-Wisp, Spore, ...) that inflicts one of the
+    five modeled ailments (paralysis/sleep/freeze/burn/poison), the
+    highest-accuracy one of those gets a slot too, so status isn't a
+    mechanic that only ever shows up as a rare secondary effect.
     """
     pool = data.get("move_pool", [])
     if not pool:
@@ -279,6 +329,12 @@ async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4)
     candidates = [
         mv for mv in results
         if isinstance(mv, dict) and mv.get("power") and mv.get("damage_class") != "status"
+    ]
+    status_candidates = [
+        mv for mv in results
+        if isinstance(mv, dict) and mv.get("damage_class") == "status"
+        and mv.get("ailment") in STATUS_INDUCING_AILMENTS
+        and not mv.get("ailment_chance")  # only the move's own guaranteed effect, not a % secondary
     ]
     if not candidates:
         tackle = await get_move_data(session, "tackle")
@@ -316,6 +372,15 @@ async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4)
         best_stab = max(stab_candidates, key=lambda m: m.get("power") or 0)
         chosen.append(best_stab)
         used_types.add(ptype)
+
+    # Status guarantee: one reliable status-inducing move, if there's
+    # still room and the Pokemon actually learns one.
+    if len(chosen) < count and status_candidates:
+        remaining_status = [m for m in status_candidates if m not in chosen]
+        if remaining_status:
+            best_status = max(remaining_status, key=lambda m: m.get("accuracy") or 0)
+            chosen.append(best_status)
+            used_types.add(best_status.get("type"))
 
     # Pass 1: strongest move of each not-yet-used type, for coverage.
     for mv in candidates:
@@ -463,6 +528,33 @@ def type_multiplier(move_type: str, defender_types: list) -> float:
     return mult
 
 
+# ── Abilities ────────────────────────────────────────────────────────────────
+# Only a handful of common, mechanically-simple abilities are modeled — held
+# items, weather, and the full ability roster are deliberately out of scope.
+KNOWN_ABILITIES = {
+    "levitate", "water-absorb", "volt-absorb", "flash-fire",
+    "intimidate", "guts", "sturdy",
+}
+# Move-type -> the ability that grants full immunity to it.
+ABILITY_IMMUNITY = {
+    "ground": "levitate",
+    "water": "water-absorb",
+    "electric": "volt-absorb",
+    "fire": "flash-fire",
+}
+# Of those immunities, which ones heal the holder instead of just no-selling.
+ABILITY_ABSORB_HEAL = {"water-absorb", "volt-absorb"}
+
+
+def type_multiplier_for(move_type: str, defender: "BattlePokemon") -> float:
+    """Like type_multiplier(), but folds in ability-based type immunities
+    (Levitate/Water Absorb/Volt Absorb/Flash Fire) so the AI's damage
+    estimates never rate a move that would actually do nothing."""
+    if ABILITY_IMMUNITY.get(getattr(defender, "ability", None)) == move_type:
+        return 0.0
+    return type_multiplier(move_type, defender.types)
+
+
 # Maps PokeAPI stat names -> the short attribute names BattlePokemon uses.
 # (accuracy/evasion aren't modeled as separate battle stats here, so
 # stat-changing effects that target those are simply ignored.)
@@ -506,9 +598,25 @@ class BattlePokemon:
         # first turn to turn.
         self.base_speed = s.get("speed", 50)
         self.moves = moves or [FALLBACK_MOVE]
+        # PP tracking: give each move dict a mutable current_pp field. Each
+        # BattlePokemon gets its own freshly-fetched move dicts (get_move_data
+        # returns a new dict per call), so mutating these in place here is
+        # safe and never bleeds PP usage across different Pokemon/battles.
+        for mv in self.moves:
+            mv.setdefault("current_pp", mv.get("pp") or 5)
         # Battle-only stat boosts/drops (-6..+6 stages), reset per battle —
         # these are what stat-lowering/raising secondary effects modify.
         self.stat_stages = {"atk": 0, "dfn": 0, "spa": 0, "spd": 0, "spe": 0}
+        # Major status condition: None, "burn", "paralysis", "poison",
+        # "sleep", or "freeze". status_counter is only meaningful for sleep
+        # (counts down the number of turns left asleep).
+        self.status: Optional[str] = None
+        self.status_counter: int = 0
+        # One ability, randomly chosen from this species' non-hidden
+        # abilities (if any were fetched/cached). Only a handful of common,
+        # high-impact abilities are actually modeled — see KNOWN_ABILITIES.
+        abilities = data.get("abilities") or []
+        self.ability: Optional[str] = random.choice(abilities) if abilities else None
 
     @property
     def fainted(self) -> bool:
@@ -516,7 +624,15 @@ class BattlePokemon:
 
     def effective_stat(self, key: str) -> float:
         base = getattr(self, key)
-        return base * _stage_multiplier(self.stat_stages.get(key, 0))
+        value = base * _stage_multiplier(self.stat_stages.get(key, 0))
+        if key == "atk" and self.status == "burn":
+            # Guts turns burn's usual Attack penalty into a bonus instead.
+            value *= 1.5 if self.ability == "guts" else 0.5
+        elif key == "atk" and self.status is not None and self.ability == "guts":
+            value *= 1.5
+        if key == "spe" and self.status == "paralysis":
+            value *= 0.5
+        return value
 
 
 def calc_damage(attacker: BattlePokemon, defender: BattlePokemon, move: dict):
@@ -528,7 +644,7 @@ def calc_damage(attacker: BattlePokemon, defender: BattlePokemon, move: dict):
     else:
         a, d = attacker.effective_stat("spa"), defender.effective_stat("spd")
     stab = 1.5 if move.get("type") in attacker.types else 1.0
-    eff = type_multiplier(move.get("type", "normal"), defender.types)
+    eff = type_multiplier_for(move.get("type", "normal"), defender)
     crit = random.random() < 0.0625
     crit_mult = 1.5 if crit else 1.0
     rand = random.uniform(0.85, 1.0)
@@ -570,6 +686,74 @@ def _apply_secondary_effects(attacker: BattlePokemon, defender: BattlePokemon, m
                       if delta < 0 else
                       f"📈 {target.name.title()}'s {STAT_DISPLAY[key]} {emphasis}{verb}!")
     return lines
+
+
+STATUS_VERB = {
+    "burn": "was burned", "paralysis": "was paralyzed", "poison": "was poisoned",
+    "sleep": "fell asleep", "freeze": "was frozen solid",
+}
+STATUS_EMOJI = {"burn": "🔥", "paralysis": "⚡", "poison": "☠️", "sleep": "😴", "freeze": "🧊"}
+# Type-based immunities to specific status conditions (a small, cheap-to-add
+# nicety that matches the mainline games and stops e.g. Electric-types ever
+# getting paralyzed by a Body Slam).
+STATUS_TYPE_IMMUNITY = {
+    "burn": "fire", "paralysis": "electric", "freeze": "ice",
+    "poison": ("poison", "steel"),
+}
+SLEEP_MIN_TURNS, SLEEP_MAX_TURNS = 1, 3
+
+
+def _apply_status_ailment(attacker: BattlePokemon, defender: BattlePokemon, move: dict) -> Optional[str]:
+    """Applies a move's status ailment (paralysis/sleep/freeze/burn/poison),
+    if any, and returns a flavor-text line — or None if the move has no
+    modeled ailment, it didn't proc, or it couldn't take effect."""
+    ailment = move.get("ailment")
+    if ailment not in STATUS_INDUCING_AILMENTS:
+        return None
+
+    chance = move.get("ailment_chance") or 0
+    if chance and random.uniform(0, 100) > chance:
+        return None  # secondary-effect chance didn't proc this time
+
+    target_self = move.get("target") == "user"
+    target = attacker if target_self else defender
+
+    if target.status is not None:
+        return None  # only one major status at a time
+    immune_types = STATUS_TYPE_IMMUNITY.get(ailment, ())
+    if isinstance(immune_types, str):
+        immune_types = (immune_types,)
+    if any(t in target.types for t in immune_types):
+        return None
+
+    target.status = ailment
+    if ailment == "sleep":
+        target.status_counter = random.randint(SLEEP_MIN_TURNS, SLEEP_MAX_TURNS)
+    return f"{STATUS_EMOJI[ailment]} {target.name.title()} {STATUS_VERB[ailment]}!"
+
+
+def _status_precheck(pokemon: BattlePokemon) -> tuple:
+    """Called right before a Pokemon would act. Returns (can_move, message).
+    Handles sleep/freeze fully preventing the move (with a chance to wake
+    up/thaw each turn) and paralysis' chance to flinch-lock the Pokemon in
+    place, on top of the passive stat effects handled in effective_stat()."""
+    status = pokemon.status
+    if status == "sleep":
+        pokemon.status_counter -= 1
+        if pokemon.status_counter <= 0:
+            pokemon.status = None
+            return True, f"😴 {pokemon.name.title()} woke up!"
+        return False, f"😴 {pokemon.name.title()} is fast asleep."
+    if status == "freeze":
+        if random.random() < 0.20:
+            pokemon.status = None
+            return True, f"🧊 {pokemon.name.title()} thawed out!"
+        return False, f"🧊 {pokemon.name.title()} is frozen solid!"
+    if status == "paralysis":
+        if random.random() < 0.25:
+            return False, f"⚡ {pokemon.name.title()} is fully paralyzed!"
+        return True, None
+    return True, None
 
 
 def _apply_drain_recoil(attacker: BattlePokemon, dmg: int, move: dict) -> Optional[str]:
@@ -745,24 +929,83 @@ def estimate_damage(attacker: BattlePokemon, defender: BattlePokemon, move: dict
     else:
         a, d = attacker.effective_stat("spa"), defender.effective_stat("spd")
     stab = 1.5 if move.get("type") in attacker.types else 1.0
-    eff = type_multiplier(move.get("type", "normal"), defender.types)
+    eff = type_multiplier_for(move.get("type", "normal"), defender)
     if eff == 0:
         return 0.0
     base = (((2 * LEVEL / 5 + 2) * power * a / max(d, 1)) / 50 + 2)
     return base * stab * eff
 
 
+SWITCH_HP_THRESHOLD = 0.25       # consider switching if best move clears less than this % of foe's HP
+SWITCH_IMPROVEMENT_MARGIN = 0.15  # ...and only if a bench mon's matchup beats staying in by at least this much
+
+
+def _accuracy_weighted_score(attacker: BattlePokemon, defender: BattlePokemon, move: dict) -> float:
+    """Expected damage, discounted by the move's accuracy - a 150-power
+    move that misses half the time should usually lose out to a reliable
+    90-power move, not just whichever number is bigger on paper."""
+    acc = move.get("accuracy")
+    acc_frac = 1.0 if acc is None else acc / 100
+    return estimate_damage(attacker, defender, move) * acc_frac
+
+
+def _best_matchup_fraction(attacker: BattlePokemon, defender: BattlePokemon) -> float:
+    """The attacker's single best accuracy-weighted move, as a fraction of
+    the defender's max HP - used both to judge the AI's current matchup and
+    to size up potential switch-in candidates. Moves with no PP left are
+    skipped, same as a real trainer couldn't select them."""
+    best = 0.0
+    for m in attacker.moves:
+        if m.get("current_pp", 1) <= 0:
+            continue
+        score = _accuracy_weighted_score(attacker, defender, m)
+        if score > best:
+            best = score
+    return best / max(defender.max_hp, 1)
+
+
 def bot_choose_action(trainer: Trainer, opponent: Trainer) -> tuple:
-    """Battle AI for the bot's own trainer: calculates the expected damage
-    of every move in its active Pokemon's (already-curated) move pool
-    against the opponent's current active Pokemon — factoring in STAB,
-    type effectiveness, and the attacker/defender's effective stats — and
-    attacks with whichever move deals the most damage. No switching logic
-    beyond forced switches on faint — see Battle.get_forced_switch."""
-    moves = trainer.active.moves
+    """Battle AI for the bot's own trainer.
+
+    Attacking: scores every move in its active Pokemon's move pool by
+    accuracy-weighted expected damage (STAB, type effectiveness, and
+    effective stats all factored in via estimate_damage), skips any move
+    with no PP left, and attacks with the best one - or Struggles (index
+    -1) if every move is out of PP.
+
+    Switching: if the best available move would clear less than
+    SWITCH_HP_THRESHOLD of the foe's HP, the bot looks at its bench. For
+    each healthy teammate it compares "how hard would I hit them" against
+    "how hard would they hit me back" (both accuracy-weighted, as a % of
+    max HP) - if a teammate's net matchup beats staying in by more than
+    SWITCH_IMPROVEMENT_MARGIN, the bot switches to it instead of attacking
+    this turn. This is on top of the forced switches on faint handled by
+    Battle.get_forced_switch."""
+    active = trainer.active
     defender = opponent.active
-    scores = [estimate_damage(trainer.active, defender, m) for m in moves]
-    best_idx = max(range(len(moves)), key=lambda i: scores[i])
+    moves = active.moves
+
+    available = [i for i, m in enumerate(moves) if m.get("current_pp", 1) > 0]
+    if not available:
+        best_idx = -1
+        best_frac = 0.0
+    else:
+        scores = {i: _accuracy_weighted_score(active, defender, moves[i]) for i in available}
+        best_idx = max(available, key=lambda i: scores[i])
+        best_frac = scores[best_idx] / max(defender.max_hp, 1)
+
+    bench = [(i, p) for i, p in enumerate(trainer.team) if not p.fainted and p is not active]
+    if bench and best_frac < SWITCH_HP_THRESHOLD:
+        stay_value = best_frac - _best_matchup_fraction(defender, active)
+        best_switch_idx, best_switch_value = None, stay_value + SWITCH_IMPROVEMENT_MARGIN
+        for i, candidate in bench:
+            value = _best_matchup_fraction(candidate, defender) - _best_matchup_fraction(defender, candidate)
+            if value > best_switch_value:
+                best_switch_value = value
+                best_switch_idx = i
+        if best_switch_idx is not None:
+            return ("switch", best_switch_idx)
+
     return ("move", best_idx)
 
 
@@ -905,14 +1148,24 @@ class MoveSelect(discord.ui.Select):
         self.trainer = trainer
         self.panel = panel
         options = []
-        for i, mv in enumerate(trainer.active.moves):
-            tag = "⚡Priority • " if mv.get("priority", 0) > 0 else ""
-            desc = f"{tag}{mv.get('type', 'normal').title()} • {mv.get('power') or '—'} power"
+        usable = [(i, mv) for i, mv in enumerate(trainer.active.moves) if mv.get("current_pp", 1) > 0]
+        if not usable:
+            # Out of PP on every move — the only legal action is Struggle.
             options.append(discord.SelectOption(
-                label=mv["name"].replace("-", " ").title()[:100],
-                description=desc[:100],
-                value=str(i),
+                label="Struggle",
+                description="No PP left! Recoil damage to yourself.",
+                value="-1",
             ))
+        else:
+            for i, mv in usable:
+                tag = "⚡Priority • " if mv.get("priority", 0) > 0 else ""
+                pp_txt = f"{mv.get('current_pp')}/{mv.get('pp') or '—'} PP"
+                desc = f"{tag}{mv.get('type', 'normal').title()} • {mv.get('power') or '—'} power • {pp_txt}"
+                options.append(discord.SelectOption(
+                    label=mv["name"].replace("-", " ").title()[:100],
+                    description=desc[:100],
+                    value=str(i),
+                ))
         super().__init__(
             placeholder=f"{trainer.user.display_name}: choose {trainer.active.name.title()}'s move",
             min_values=1, max_values=1, options=options, row=row,
@@ -1058,14 +1311,18 @@ class BattlePanel(discord.ui.View):
             self.event.set()
 
     async def on_timeout(self):
-        # Fill in any missing action with that trainer's strongest move
-        # (moves are pre-sorted by power) instead of a random one.
+        # Fill in any missing action with that trainer's strongest move that
+        # still has PP left (moves are pre-sorted by power) instead of a
+        # random one — or Struggle (-1) if every move is out of PP.
         for trainer in (self.t1, self.t2):
             if trainer.user.id not in self.actions:
-                self.actions[trainer.user.id] = ("move", 0)
+                usable = [i for i, mv in enumerate(trainer.active.moves) if mv.get("current_pp", 1) > 0]
+                idx = usable[0] if usable else -1
+                self.actions[trainer.user.id] = ("move", idx)
                 sel = self._select_for(trainer)
                 sel.disabled = True
-                sel.placeholder = f"{trainer.user.display_name} ran out of time — auto-used strongest move"
+                fallback_label = "auto-used strongest move" if idx != -1 else "out of PP — used Struggle"
+                sel.placeholder = f"{trainer.user.display_name} ran out of time — {fallback_label}"
         for item in self.children:
             item.disabled = True
         if self.message is not None:
@@ -1133,40 +1390,92 @@ class Battle:
         return await self.channel.send(embed=embed, **kwargs)
 
     def _execute_move(self, attacker: Trainer, defender: Trainer, move: dict) -> list:
-        """Resolves one move: accuracy check, damage, secondary stat
-        effects, recoil/drain, and self-KO moves. Returns a list of
-        flavor-text lines (usually 1-3) describing everything that
+        """Resolves one move: accuracy check, ability immunities, damage
+        (with a Sturdy check), status-move handling, recoil/drain, self-KO
+        moves, secondary stat effects, and status ailments. Returns a list
+        of flavor-text lines (usually 1-3) describing everything that
         happened."""
         move_name = move["name"].replace("-", " ").title()
+        atk_mon, def_mon = attacker.active, defender.active
 
         acc = move.get("accuracy")
         if acc is not None and random.uniform(0, 100) > acc:
-            return [f"❌ {attacker.active.name.title()}'s {move_name} missed!"]
+            return [f"❌ {atk_mon.name.title()}'s {move_name} missed!"]
 
-        dmg, eff, crit = calc_damage(attacker.active, defender.active, move)
-        defender.active.hp = max(0, defender.active.hp - dmg)
+        move_type = move.get("type", "normal")
+        is_damaging = (move.get("power") or 0) > 0
 
-        text = f"➡️ {attacker.active.name.title()} used **{move_name}**! (**{dmg}** dmg)"
-        if crit:
-            text += " 💫 Critical hit!"
-        if eff > 1:
-            text += " It's super effective!"
-        elif 0 < eff < 1:
-            text += " It's not very effective..."
-        elif eff == 0:
-            text += " It had no effect!"
-        lines = [text]
+        # Ability-based full type immunity (Levitate/Water Absorb/Volt
+        # Absorb/Flash Fire) — the move does nothing (or heals the
+        # defender, for the absorb abilities) and nothing else about it
+        # resolves.
+        if is_damaging and ABILITY_IMMUNITY.get(def_mon.ability) == move_type:
+            ability_label = def_mon.ability.replace("-", " ").title()
+            if def_mon.ability in ABILITY_ABSORB_HEAL:
+                healed = min(def_mon.max_hp // 4, def_mon.max_hp - def_mon.hp)
+                def_mon.hp += healed
+                if healed > 0:
+                    return [f"🛡️ {def_mon.name.title()}'s {ability_label} absorbed the attack and healed **{healed}** HP!"]
+            return [f"🛡️ {def_mon.name.title()}'s {ability_label} makes {move_name} have no effect!"]
+
+        lines = []
+        dmg = 0
+        if is_damaging:
+            dmg, eff, crit = calc_damage(atk_mon, def_mon, move)
+            sturdy_save = (def_mon.ability == "sturdy" and def_mon.hp == def_mon.max_hp
+                           and dmg >= def_mon.hp)
+            if sturdy_save:
+                dmg = def_mon.hp - 1
+            def_mon.hp = max(0, def_mon.hp - dmg)
+
+            text = f"➡️ {atk_mon.name.title()} used **{move_name}**! (**{dmg}** dmg)"
+            if crit:
+                text += " 💫 Critical hit!"
+            if eff > 1:
+                text += " It's super effective!"
+            elif 0 < eff < 1:
+                text += " It's not very effective..."
+            elif eff == 0:
+                text += " It had no effect!"
+            lines.append(text)
+            if sturdy_save:
+                lines.append(f"🛡️ {def_mon.name.title()} hung on with Sturdy!")
+        else:
+            lines.append(f"➡️ {atk_mon.name.title()} used **{move_name}**!")
 
         # Self-KO moves: Explosion / Self-Destruct faint the user outright.
         if move["name"] in SELF_KO_MOVES:
-            attacker.active.hp = 0
-            lines.append(f"💥 {attacker.active.name.title()} was consumed by the blast!")
+            atk_mon.hp = 0
+            lines.append(f"💥 {atk_mon.name.title()} was consumed by the blast!")
+        elif move["name"] == "struggle":
+            recoil = max(1, int(atk_mon.max_hp * STRUGGLE_RECOIL_FRACTION))
+            atk_mon.hp = max(0, atk_mon.hp - recoil)
+            lines.append(f"💥 {atk_mon.name.title()} is damaged by recoil!")
         else:
-            recoil_msg = _apply_drain_recoil(attacker.active, dmg, move)
+            recoil_msg = _apply_drain_recoil(atk_mon, dmg, move)
             if recoil_msg:
                 lines.append(recoil_msg)
 
-        lines.extend(_apply_secondary_effects(attacker.active, defender.active, move))
+        lines.extend(_apply_secondary_effects(atk_mon, def_mon, move))
+
+        status_msg = _apply_status_ailment(atk_mon, def_mon, move)
+        if status_msg:
+            lines.append(status_msg)
+
+        return lines
+
+    def _apply_switch_in_abilities(self, trainer: Trainer, opponent: Trainer) -> list:
+        """Triggers on-switch-in ability effects for trainer's newly-active
+        Pokemon (currently just Intimidate) against the opponent's current
+        active. Returns flavor-text lines, if any."""
+        mon = trainer.active
+        lines = []
+        if mon.ability == "intimidate" and not opponent.active.fainted:
+            opp_mon = opponent.active
+            old = opp_mon.stat_stages.get("atk", 0)
+            opp_mon.stat_stages["atk"] = max(-6, old - 1)
+            if opp_mon.stat_stages["atk"] != old:
+                lines.append(f"😤 {mon.name.title()}'s Intimidate lowered {opp_mon.name.title()}'s Attack!")
         return lines
 
     async def get_forced_switch(self, trainer: Trainer) -> int:
@@ -1190,6 +1499,13 @@ class Battle:
             f"— all Pokémon are Level {LEVEL}."
         )
 
+        # Intimidate can trigger from the very first send-out, same as
+        # every later switch-in.
+        start_lines = (self._apply_switch_in_abilities(self.t1, self.t2)
+                       + self._apply_switch_in_abilities(self.t2, self.t1))
+        if start_lines:
+            await self.channel.send("\n".join(start_lines))
+
         turn = 1
         last_summary: Optional[str] = None
         pending_switches: list = []  # trainers whose active fainted last turn
@@ -1207,9 +1523,12 @@ class Battle:
             for trainer in pending_switches:
                 new_idx = await self.get_forced_switch(trainer)
                 trainer.active_idx = new_idx
-                await self.channel.send(
-                    f"{trainer.user.display_name} sent out **{trainer.active.name.title()}**!"
-                )
+                other = self.t2 if trainer is self.t1 else self.t1
+                switch_in_lines = self._apply_switch_in_abilities(trainer, other)
+                msg = f"{trainer.user.display_name} sent out **{trainer.active.name.title()}**!"
+                if switch_in_lines:
+                    msg += "\n" + "\n".join(switch_in_lines)
+                await self.channel.send(msg)
             pending_switches = []
 
             # 2) The actual actionable panel: image + trainer info + move
@@ -1229,7 +1548,7 @@ class Battle:
 
             # 1) Switches resolve first and consume the whole turn for that
             #    trainer — a switched-in Pokemon never also attacks.
-            for trainer in (self.t1, self.t2):
+            for trainer, opponent in ((self.t1, self.t2), (self.t2, self.t1)):
                 action = panel.actions.get(trainer.user.id)
                 if action and action[0] == "switch":
                     old_name = trainer.active.name.title()
@@ -1238,6 +1557,7 @@ class Battle:
                         f"🔄 {trainer.user.display_name} withdrew {old_name} and sent out "
                         f"**{trainer.active.name.title()}**!"
                     )
+                    lines.extend(self._apply_switch_in_abilities(trainer, opponent))
                 elif action and action[0] == "pass":
                     lines.append(f"⏭️ {trainer.user.display_name} passed the turn.")
 
@@ -1247,7 +1567,17 @@ class Battle:
             for trainer, opponent in ((self.t1, self.t2), (self.t2, self.t1)):
                 action = panel.actions.get(trainer.user.id)
                 if action and action[0] == "move":
-                    move = trainer.active.moves[action[1]]
+                    idx = action[1]
+                    # idx is -1 (explicit Struggle) or points at a move
+                    # that's since run out of PP (e.g. a stale queued
+                    # action) — either way, Struggle. dict()-copy the
+                    # fallback so its current_pp bookkeeping never mixes
+                    # across Pokemon/turns.
+                    if idx < 0 or idx >= len(trainer.active.moves) \
+                            or trainer.active.moves[idx].get("current_pp", 1) <= 0:
+                        move = dict(FALLBACK_MOVE)
+                    else:
+                        move = trainer.active.moves[idx]
                     # Capture the actual Pokemon object whose move this is,
                     # not just the trainer — trainer.active_idx can change
                     # mid-loop below (a forced switch after an earlier
@@ -1284,7 +1614,17 @@ class Battle:
                     continue
                 if attacker.active.fainted or defender.active.fainted:
                     continue
+
+                # Sleep/freeze/paralysis can prevent the move outright.
+                can_move, status_line = _status_precheck(attacker.active)
+                if status_line:
+                    lines.append(status_line)
+                if not can_move:
+                    continue
+
                 move_name = move["name"]
+                if move_name != "struggle" and "current_pp" in move:
+                    move["current_pp"] = max(0, move["current_pp"] - 1)
                 lines.extend(self._execute_move(attacker, defender, move))
 
                 if attacker.active.fainted and move_name not in SELF_KO_MOVES:
@@ -1300,6 +1640,26 @@ class Battle:
                     lines.append(f"💥 {defender.active.name.title()} fainted!")
                     if defender.alive_team:
                         pending_switches.append(defender)
+
+            # 3) End-of-turn residual status damage (burn/poison chip
+            #    damage). Skipped for a Pokemon that already fainted this
+            #    turn — matches the mainline games, no double-dipping.
+            for trainer in (self.t1, self.t2):
+                mon = trainer.active
+                if mon.fainted:
+                    continue
+                if mon.status == "burn":
+                    dmg = max(1, mon.max_hp // 16)
+                    mon.hp = max(0, mon.hp - dmg)
+                    lines.append(f"🔥 {mon.name.title()} is hurt by its burn! (**{dmg}** dmg)")
+                elif mon.status == "poison":
+                    dmg = max(1, mon.max_hp // 8)
+                    mon.hp = max(0, mon.hp - dmg)
+                    lines.append(f"☠️ {mon.name.title()} is hurt by poison! (**{dmg}** dmg)")
+                if mon.fainted:
+                    lines.append(f"💥 {mon.name.title()} fainted!")
+                    if trainer.alive_team:
+                        pending_switches.append(trainer)
 
             last_summary = "\n".join(lines) if lines else "No actions were taken."
             turn += 1
@@ -1323,6 +1683,22 @@ class Battle:
         await self.channel.send(
             f"🏆 **{winner.user.display_name} wins the battle!** GG {loser.user.mention}."
         )
+
+        # Record win/loss for every human trainer in the battle (skip the
+        # bot's own side — `!pf` tracks people, not the bot). vs_ai is True
+        # whenever the opponent was the bot, so a `!battle @<bot>` fight
+        # logs under "Vs AI" and a normal PvP fight logs under "Vs Humans"
+        # for both participants.
+        guild_id = self.channel.guild.id if self.channel.guild else 0
+        vs_ai = self.t1.is_bot or self.t2.is_bot
+        for trainer in (self.t1, self.t2):
+            if trainer.is_bot:
+                continue
+            try:
+                await _db.record_battle_result(guild_id, trainer.user.id, vs_ai, trainer is winner)
+            except Exception:
+                pass  # never let stat logging break the battle's end
+
         self.cog.active_battles.pop(self.channel.id, None)
 
 
@@ -1493,6 +1869,34 @@ class BattleCog(commands.Cog, name="Battle"):
             await ctx.send("Battle force-ended.")
         else:
             await ctx.send("Nothing to cancel here.")
+
+    @commands.command(name="pf")
+    async def battle_profile(self, ctx: commands.Context, member: Optional[discord.Member] = None):
+        """!pf [@user] — shows a trainer's battle record (defaults to you),
+        split into PvP results and results against the bot."""
+        member = member or ctx.author
+        guild_id = ctx.guild.id if ctx.guild else 0
+        stats = await _db.get_battle_stats(guild_id, member.id)
+
+        embed = discord.Embed(
+            title=f"⚔️ {member.display_name}'s Battle Record",
+            colour=0x3498DB,
+        )
+        embed.add_field(
+            name="Vs Humans",
+            value=(f"Total battles: **{stats['human_total']}**\n"
+                   f"Win: **{stats['human_wins']}**\n"
+                   f"Loss: **{stats['human_losses']}**"),
+            inline=True,
+        )
+        embed.add_field(
+            name="Vs AI",
+            value=(f"Total battles: **{stats['ai_total']}**\n"
+                   f"Win: **{stats['ai_wins']}**\n"
+                   f"Loss: **{stats['ai_losses']}**"),
+            inline=True,
+        )
+        await ctx.send(embed=embed)
 
 
 async def setup(bot: commands.Bot):
