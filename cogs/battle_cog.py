@@ -892,9 +892,39 @@ def _apply_drain_recoil(attacker: BattlePokemon, dmg: int, move: dict) -> Option
 # ── Battle scene image rendering ────────────────────────────────────────────
 
 CANVAS_W, CANVAS_H = 720, 380
-SKY_COLOR = (135, 206, 235, 255)
-GROUND_COLOR = (150, 210, 90, 255)
 SPRITE_SCALE = 3
+
+# Season x time-of-day background presets. One is rolled per battle (not per
+# turn/render call) so the scenery stays consistent for the whole fight —
+# see Battle.__init__ / self.background.
+BACKGROUNDS = [
+    dict(name="Spring Day",   sky=(135, 206, 235, 255), ground=(140, 200, 90, 255),
+         patch=(160, 215, 110, 255), time="day",   season="spring"),
+    dict(name="Spring Night", sky=(28, 38, 78, 255),    ground=(60, 85, 55, 255),
+         patch=(75, 100, 68, 255),  time="night", season="spring"),
+    dict(name="Summer Day",   sky=(90, 175, 240, 255),  ground=(120, 190, 70, 255),
+         patch=(140, 205, 90, 255), time="day",   season="summer"),
+    dict(name="Summer Night", sky=(18, 28, 66, 255),    ground=(45, 75, 48, 255),
+         patch=(58, 90, 58, 255),   time="night", season="summer"),
+    dict(name="Autumn Day",   sky=(180, 190, 210, 255), ground=(190, 140, 70, 255),
+         patch=(205, 155, 85, 255), time="day",   season="autumn"),
+    dict(name="Autumn Night", sky=(32, 32, 52, 255),    ground=(85, 65, 42, 255),
+         patch=(98, 78, 52, 255),   time="night", season="autumn"),
+    dict(name="Winter Day",   sky=(205, 222, 235, 255), ground=(232, 238, 245, 255),
+         patch=(245, 248, 252, 255), time="day",  season="winter"),
+    dict(name="Winter Night", sky=(12, 18, 42, 255),    ground=(195, 202, 215, 255),
+         patch=(212, 218, 228, 255), time="night", season="winter"),
+]
+
+
+def pick_background() -> dict:
+    """Roll a random season/time-of-day background preset for a battle.
+    Stamps a fresh random seed onto the copy so the scattered decorations
+    (stars/snow/leaves/flowers) are stable for every turn of *this* battle
+    but still vary from the next battle that rolls the same preset."""
+    preset = dict(random.choice(BACKGROUNDS))
+    preset["seed"] = random.randint(0, 1_000_000_000)
+    return preset
 
 _FONT_CACHE: dict = {}
 
@@ -963,22 +993,70 @@ def _draw_hp_bar_above(draw: "ImageDraw.ImageDraw", center_x: float, sprite_top_
                                 radius=5, fill=_hp_color(frac))
 
 
+def _draw_background_flair(draw: "ImageDraw.ImageDraw", bg: dict, seed: int):
+    """Season/time-of-day decorations layered on top of the sky+ground fill.
+    `seed` keeps the scattered decorations (stars, snow, leaves...) stable
+    across every render call for a given battle instead of jittering every
+    turn, while still varying scene-to-scene."""
+    rng = random.Random(seed)
+
+    if bg["time"] == "night":
+        # Moon, upper-left, plus a scatter of stars across the sky.
+        mx, my, mr = int(CANVAS_W * 0.13), 46, 22
+        draw.ellipse([mx - mr, my - mr, mx + mr, my + mr], fill=(240, 240, 225, 255))
+        draw.ellipse([mx - mr + 10, my - mr - 4, mx + mr + 10, my + mr - 4], fill=bg["sky"])
+        for _ in range(28):
+            sx = rng.randint(0, CANVAS_W)
+            sy = rng.randint(0, CANVAS_H - 130)
+            s = rng.choice((1, 1, 2))
+            draw.ellipse([sx, sy, sx + s, sy + s], fill=(255, 255, 255, 220))
+    else:
+        # Sun, upper-right.
+        sx, sy, sr = int(CANVAS_W * 0.88), 44, 26
+        draw.ellipse([sx - sr, sy - sr, sx + sr, sy + sr], fill=(255, 235, 120, 255))
+
+    if bg["season"] == "winter":
+        for _ in range(40):
+            fx = rng.randint(0, CANVAS_W)
+            fy = rng.randint(CANVAS_H - 118, CANVAS_H - 4)
+            s = rng.choice((2, 2, 3))
+            draw.ellipse([fx, fy, fx + s, fy + s], fill=(255, 255, 255, 235))
+    elif bg["season"] == "autumn":
+        leaf_colors = [(200, 110, 40, 255), (215, 150, 40, 255), (170, 70, 30, 255)]
+        for _ in range(22):
+            fx = rng.randint(0, CANVAS_W)
+            fy = rng.randint(CANVAS_H - 118, CANVAS_H - 4)
+            draw.ellipse([fx, fy, fx + 4, fy + 4], fill=rng.choice(leaf_colors))
+    elif bg["season"] == "spring":
+        flower_colors = [(255, 255, 255, 255), (255, 200, 220, 255), (255, 230, 120, 255)]
+        for _ in range(18):
+            fx = rng.randint(0, CANVAS_W)
+            fy = rng.randint(CANVAS_H - 118, CANVAS_H - 4)
+            draw.ellipse([fx, fy, fx + 5, fy + 5], fill=rng.choice(flower_colors))
+
+
 async def render_battle_scene(session: aiohttp.ClientSession,
                                opponent_pokemon: "BattlePokemon",
-                               player_pokemon: "BattlePokemon") -> Optional[discord.File]:
+                               player_pokemon: "BattlePokemon",
+                               background: Optional[dict] = None) -> Optional[discord.File]:
     """Classic side-on battle scene: opponent upper-right facing player,
     player's pokemon lower-left (mirrored) facing opponent, with an HP bar
-    rendered directly above each sprite (name, Lv.100, colour-shifting bar)."""
+    rendered directly above each sprite (name, Lv.100, colour-shifting bar).
+    `background` is one of the presets in BACKGROUNDS (a season/time-of-day
+    combo); if omitted, one is rolled on the spot."""
     if not PIL_OK:
         return None
 
-    canvas = Image.new("RGBA", (CANVAS_W, CANVAS_H), SKY_COLOR)
+    bg = background or pick_background()
+
+    canvas = Image.new("RGBA", (CANVAS_W, CANVAS_H), bg["sky"])
     draw = ImageDraw.Draw(canvas)
-    draw.rectangle([0, CANVAS_H - 120, CANVAS_W, CANVAS_H], fill=GROUND_COLOR)
+    _draw_background_flair(draw, bg, seed=bg.get("seed", 0))
+    draw.rectangle([0, CANVAS_H - 120, CANVAS_W, CANVAS_H], fill=bg["ground"])
     draw.ellipse([CANVAS_W * 0.55 - 150, CANVAS_H - 150, CANVAS_W * 0.55 + 150, CANVAS_H - 90],
-                 fill=(130, 190, 75, 255))
+                 fill=bg["patch"])
     draw.ellipse([CANVAS_W * 0.14 - 120, CANVAS_H - 95, CANVAS_W * 0.14 + 120, CANVAS_H - 45],
-                 fill=(130, 190, 75, 255))
+                 fill=bg["patch"])
 
     opp_sprite = await _fetch_sprite(session, opponent_pokemon.sprite)
     player_sprite = await _fetch_sprite(session, player_pokemon.sprite)
@@ -1529,6 +1607,10 @@ class Battle:
         self.count = count
         self.bst_filter = bst_filter
         self.vs_bot = vs_bot
+        # Rolled once per battle (not per turn) so the scene stays the same
+        # season/time-of-day for the whole fight instead of changing every
+        # turn's image.
+        self.background = pick_background()
         # Forfeit / AFK tracking.
         self.forfeited_trainer: Optional[Trainer] = None
         self.forfeit_reason: Optional[str] = None
@@ -1537,7 +1619,8 @@ class Battle:
 
     async def build_embed(self, turn: int, last_summary: Optional[str],
                            final: bool = False, winner: Optional[Trainer] = None):
-        file = await render_battle_scene(self.cog.session, self.t2.active, self.t1.active)
+        file = await render_battle_scene(self.cog.session, self.t2.active, self.t1.active,
+                                          background=self.background)
 
         embed = discord.Embed(
             title=("🏆 Battle Complete" if final else f"⚔️ Turn {turn}"),
@@ -2159,96 +2242,4 @@ class BattleCog(commands.Cog, name="Battle"):
                 f"📋 Custom battle! Both trainers build your team with:\n"
                 f"`!battle add pikachu, charizard, ...` (up to {count} each)\n"
                 f"{challenger.mention} and {opponent.mention}, go ahead."
-            )
-
-    async def start_rematch(self, channel, p1, p2, fmt: str, count: int,
-                             bst_filter: tuple, vs_bot: bool):
-        """Recreates the exact matchup a `RematchView` button was clicked
-        for. vs_bot always re-rolls immediately (mirrors the `!battle ai`
-        shortcut); PvP reuses the same pending-challenge machinery as a
-        fresh `!battle @user`, so random re-rolls immediately and custom
-        re-opens the `!battle add` team-build phase."""
-        if channel.id in self.pending or channel.id in self.active_battles:
-            return
-
-        if vs_bot:
-            min_total, max_total = bst_filter
-            filt_note = format_bst_filter(min_total, max_total)
-            await channel.send(f"🔁 Rematch! Rolling random teams — {p1.mention} vs me!{filt_note}")
-            t1 = Trainer(p1)
-            t2 = Trainer(self.bot.user, is_bot=True)
-            for _ in range(count):
-                t1.team.append(await build_random_pokemon(self.session, min_total, max_total))
-                t2.team.append(await build_random_pokemon(self.session, min_total, max_total))
-            battle = Battle(self, channel, t1, t2, fmt=fmt, count=count,
-                             bst_filter=bst_filter, vs_bot=True)
-            self.active_battles[channel.id] = battle
-            await battle.run()
-            return
-
-        await channel.send(f"🔁 Rematch! {p1.mention} vs {p2.mention}.")
-        self.pending[channel.id] = PendingChallenge(p1, p2, fmt, count, bst_filter=bst_filter)
-        await self.start_challenge(channel, p1, p2, fmt, count)
-
-    @battle.command(name="add")
-    async def battle_add(self, ctx: commands.Context, *, names: str):
-        pending = self.pending.get(ctx.channel.id)
-        if not pending or not pending.accepted or pending.fmt != "custom":
-            await ctx.send("There's no pending custom battle here to add Pokemon to.")
-            return
-        if ctx.author.id not in (pending.challenger.id, pending.opponent.id):
-            await ctx.send("You're not part of this battle.")
-            return
-
-        team = pending.teams.setdefault(ctx.author.id, [])
-        if len(team) >= pending.count:
-            await ctx.send(f"You already have your full team of {pending.count}.")
-            return
-
-        requested = [n.strip() for n in names.split(",") if n.strip()]
-        added, failed = [], []
-        async with ctx.typing():
-            for nm in requested:
-                if len(team) >= pending.count:
-                    failed.append(f"{nm} (team already full)")
-                    continue
-                data = await get_pokemon_data(self.session, nm)
-                if not data:
-                    failed.append(f"{nm} (not found)")
-                    continue
-                moves = await pick_moves(self.session, data)
-                team.append(BattlePokemon(data, moves))
-                added.append(data["name"].title())
-
-        msg = ""
-        if added:
-            msg += f"✅ Added: {', '.join(added)} ({len(team)}/{pending.count})\n"
-        if failed:
-            msg += f"⚠️ Skipped: {', '.join(failed)}"
-        await ctx.send(msg or "Nothing added.")
-
-        challenger_team = pending.teams.get(pending.challenger.id, [])
-        opponent_team = pending.teams.get(pending.opponent.id, [])
-        if len(challenger_team) >= pending.count and len(opponent_team) >= pending.count:
-            self.pending.pop(ctx.channel.id, None)
-            t1 = Trainer(pending.challenger, team=challenger_team)
-            t2 = Trainer(pending.opponent, team=opponent_team)
-            battle = Battle(self, ctx.channel, t1, t2, fmt=pending.fmt, count=pending.count,
-                             bst_filter=pending.bst_filter, vs_bot=False)
-            self.active_battles[ctx.channel.id] = battle
-            await ctx.send("Both teams are ready — battle starting!")
-            await battle.run()
-
-    @battle.command(name="cancel")
-    async def battle_cancel(self, ctx: commands.Context):
-        if ctx.channel.id in self.pending:
-            del self.pending[ctx.channel.id]
-            await ctx.send("Challenge cancelled.")
-        elif ctx.channel.id in self.active_battles:
-            del self.active_battles[ctx.channel.id]
-            await ctx.send("Battle force-ended.")
-        else:
-            await ctx.send("Nothing to cancel here.")
-
-    @battle.command(name="forfeit")
-    async def battle_f
+     
