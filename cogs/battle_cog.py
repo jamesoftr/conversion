@@ -1363,14 +1363,25 @@ class Battle:
             embed.add_field(name="📋 Last Turn's Results", value=last_summary[:1024], inline=False)
 
         for t in (self.t1, self.t2):
-            p = t.active
-            embed.add_field(
-                name=t.user.display_name,
-                value=(f"{p.name.title()} (Lv.{LEVEL})\n"
-                       f"❤️ {p.hp}/{p.max_hp} HP\n"
-                       f"Team remaining: {len(t.alive_team)}/{len(t.team)}"),
-                inline=True,
-            )
+            if final:
+                mon_lines = []
+                for p in t.team:
+                    marker = "💀" if p.fainted else "❤️"
+                    mon_lines.append(f"{marker} {p.name.title()} — {p.hp}/{p.max_hp} HP")
+                embed.add_field(
+                    name=t.user.display_name,
+                    value="\n".join(mon_lines)[:1024],
+                    inline=True,
+                )
+            else:
+                p = t.active
+                embed.add_field(
+                    name=t.user.display_name,
+                    value=(f"{p.name.title()} (Lv.{LEVEL})\n"
+                           f"❤️ {p.hp}/{p.max_hp} HP\n"
+                           f"Team remaining: {len(t.alive_team)}/{len(t.team)}"),
+                    inline=True,
+                )
 
         if file is not None:
             embed.set_image(url="attachment://battle.png")
@@ -1682,11 +1693,17 @@ class Battle:
         winner = self.t1 if self.t1.alive_team else self.t2
         loser = self.t2 if winner is self.t1 else self.t1
 
-        final_embed, final_file = await self.build_embed(turn, last_summary,
+        # Show the final turn's damage recap as its own embed first — same
+        # as every other turn's flow — before the "Battle Complete" embed.
+        if last_summary:
+            await self.channel.send(embed=self.build_results_embed(last_summary))
+            await asyncio.sleep(3)
+
+        final_embed, final_file = await self.build_embed(turn, None,
                                                            final=True, winner=winner)
         await self._send_embed(final_embed, final_file)
         await self.channel.send(
-            f"🏆 **{winner.user.display_name} wins the battle!** GG {loser.user.mention}."
+            f"🏆 {winner.user.mention} wins the battle! GG {loser.user.display_name}."
         )
 
         # Record win/loss for every human trainer in the battle (skip the
