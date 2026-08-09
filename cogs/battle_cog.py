@@ -469,6 +469,14 @@ class BattlePokemon:
         self.spa = _calc_stat(s.get("special-attack", 50))
         self.spd = _calc_stat(s.get("special-defense", 50))
         self.spe = _calc_stat(s.get("speed", 50))
+        # Raw (pre-truncation) base Speed, kept around purely as a
+        # deterministic turn-order tiebreaker — _calc_stat's int()
+        # truncation means two Pokemon with different base Speed can land
+        # on the exact same computed Level-100 spe, and without this the
+        # movers sort would fall straight to random.random() for what
+        # looks to a player like "the same matchup", flipping who acts
+        # first turn to turn.
+        self.base_speed = s.get("speed", 50)
         self.moves = moves or [FALLBACK_MOVE]
         # Battle-only stat boosts/drops (-6..+6 stages), reset per battle —
         # these are what stat-lowering/raising secondary effects modify.
@@ -1133,6 +1141,7 @@ class Battle:
 
         turn = 1
         last_summary: Optional[str] = None
+        pending_switches: list = []  # trainers whose active fainted last turn
 
         while self.t1.alive_team and self.t2.alive_team:
             # 1) Recap last turn's results as a plain text-only embed
@@ -1140,6 +1149,17 @@ class Battle:
             if last_summary:
                 await self.channel.send(embed=self.build_results_embed(last_summary))
                 await asyncio.sleep(3)
+
+            # 1.5) Now that the damage recap has been shown (so it's clear
+            #    *why*), prompt any trainer whose active Pokemon fainted
+            #    last turn to send out a replacement.
+            for trainer in pending_switches:
+                new_idx = await self.get_forced_switch(trainer)
+                trainer.active_idx = new_idx
+                await self.channel.send(
+                    f"{trainer.user.display_name} sent out **{trainer.active.name.title()}**!"
+                )
+            pending_switches = []
 
             # 2) The actual actionable panel: image + trainer info + move
             #    dropdowns, same as before.
@@ -1185,13 +1205,22 @@ class Battle:
                     movers.append((trainer, opponent, move, trainer.active))
             # Priority moves always go first; ties within the same priority
             # bracket go to the faster Pokemon (using effective, stage-
-            # boosted Speed); true speed ties are broken randomly each turn
-            # rather than always favoring the same trainer. Whichever
-            # Pokemon moves first and knocks out the other's active Pokemon
-            # denies it a turn entirely — the slower Pokemon's move is
-            # skipped if it's already fainted by the time its turn comes up.
+            # boosted Speed). Because _calc_stat truncates to an int, two
+            # Pokemon with different base Speed can land on the exact same
+            # computed spe — so before ever touching randomness we break
+            # that with the precise raw base Speed (higher precision,
+            # never truncated) so the objectively-faster Pokemon reliably
+            # goes first every turn instead of the order flipping randomly
+            # turn to turn. Only a genuine full tie (same base Speed too)
+            # falls to random.random(), broken fresh each turn rather than
+            # always favoring the same trainer.
             movers.sort(
-                key=lambda o: (o[2].get("priority", 0), o[0].active.effective_stat("spe"), random.random()),
+                key=lambda o: (
+                    o[2].get("priority", 0),
+                    o[0].active.effective_stat("spe"),
+                    o[0].active.base_speed,
+                    random.random(),
+                ),
                 reverse=True,
             )
 
@@ -1210,27 +1239,29 @@ class Battle:
                 if attacker.active.fainted and move_name not in SELF_KO_MOVES:
                     # Fainted from its own recoil.
                     lines.append(f"💥 {attacker.active.name.title()} fainted from recoil!")
-                if attacker.active.fainted:
-                    if attacker.alive_team:
-                        new_idx = await self.get_forced_switch(attacker)
-                        attacker.active_idx = new_idx
-                        lines.append(
-                            f"{attacker.user.display_name} sent out "
-                            f"**{attacker.active.name.title()}**!"
-                        )
+                if attacker.active.fainted and attacker.alive_team:
+                    # Don't prompt for a replacement yet — that happens at
+                    # the top of the next iteration, after the damage
+                    # recap embed has been shown.
+                    pending_switches.append(attacker)
 
                 if defender.active.fainted:
                     lines.append(f"💥 {defender.active.name.title()} fainted!")
                     if defender.alive_team:
-                        new_idx = await self.get_forced_switch(defender)
-                        defender.active_idx = new_idx
-                        lines.append(
-                            f"{defender.user.display_name} sent out "
-                            f"**{defender.active.name.title()}**!"
-                        )
+                        pending_switches.append(defender)
 
             last_summary = "\n".join(lines) if lines else "No actions were taken."
             turn += 1
+
+        # Battle's over — if the winner's own active happened to faint on
+        # this final turn too (a mutual KO), silently slot in their next
+        # healthy Pokemon so the final embed doesn't show a fainted mon.
+        for trainer in pending_switches:
+            if trainer.alive_team:
+                for i, p in enumerate(trainer.team):
+                    if not p.fainted:
+                        trainer.active_idx = i
+                        break
 
         winner = self.t1 if self.t1.alive_team else self.t2
         loser = self.t2 if winner is self.t1 else self.t1
