@@ -37,13 +37,23 @@ allowed per channel at a time.
 """
 
 import asyncio
+import io
 import random
+import sys
 from dataclasses import dataclass, field
 from typing import Optional
 
 import aiohttp
 import discord
 from discord.ext import commands
+
+try:
+    from PIL import Image, ImageDraw, ImageFont, ImageOps
+    PIL_OK = True
+except ImportError:
+    PIL_OK = False
+    print("[battle_cog] Pillow not installed — battle scene images disabled, "
+          "falling back to text embeds.", file=sys.stderr)
 
 import db as _db
 
@@ -243,6 +253,117 @@ def calc_damage(attacker: BattlePokemon, defender: BattlePokemon, move: dict):
     return max(dmg, 1), eff, crit
 
 
+# ── Battle scene image rendering ────────────────────────────────────────────
+
+CANVAS_W, CANVAS_H = 720, 380
+SKY_COLOR = (135, 206, 235, 255)
+GROUND_COLOR = (150, 210, 90, 255)
+SPRITE_SCALE = 3
+
+_FONT_CACHE: dict = {}
+
+
+def _font(size: int, bold: bool = True):
+    if not PIL_OK:
+        return None
+    key = (size, bold)
+    if key in _FONT_CACHE:
+        return _FONT_CACHE[key]
+    for name in (("DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"),
+                 ("Arial Bold.ttf" if bold else "Arial.ttf")):
+        try:
+            f = ImageFont.truetype(name, size)
+            _FONT_CACHE[key] = f
+            return f
+        except Exception:
+            continue
+    f = ImageFont.load_default()
+    _FONT_CACHE[key] = f
+    return f
+
+
+def _hp_color(frac: float):
+    if frac > 0.5:
+        return (60, 200, 70, 255)
+    if frac > 0.2:
+        return (240, 190, 40, 255)
+    return (220, 60, 60, 255)
+
+
+async def _fetch_sprite(session: aiohttp.ClientSession, url: str):
+    if not url or not PIL_OK:
+        return None
+    try:
+        async with session.get(url, timeout=10) as r:
+            if r.status != 200:
+                return None
+            raw = await r.read()
+        return Image.open(io.BytesIO(raw)).convert("RGBA")
+    except Exception:
+        return None
+
+
+def _draw_hp_plate(draw: "ImageDraw.ImageDraw", x: int, y: int, w: int,
+                    name: str, hp: int, max_hp: int):
+    draw.rounded_rectangle([x, y, x + w, y + 54], radius=10,
+                            fill=(255, 255, 255, 235), outline=(40, 40, 40, 255), width=2)
+    draw.text((x + 12, y + 6), f"{name.title()}  Lv.{LEVEL}",
+               font=_font(16), fill=(20, 20, 20, 255))
+    bar_x, bar_y, bar_w, bar_h = x + 12, y + 30, w - 24, 12
+    draw.rounded_rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h],
+                            radius=6, fill=(90, 90, 90, 255))
+    frac = max(hp, 0) / max_hp if max_hp else 0
+    fill_w = int(bar_w * frac)
+    if fill_w > 0:
+        draw.rounded_rectangle([bar_x, bar_y, bar_x + fill_w, bar_y + bar_h],
+                                radius=6, fill=_hp_color(frac))
+    hp_text = f"{max(hp, 0)}/{max_hp}"
+    draw.text((bar_x + bar_w - 6, bar_y + 14), hp_text, font=_font(13, bold=False),
+               fill=(20, 20, 20, 255), anchor="ra")
+
+
+async def render_battle_scene(session: aiohttp.ClientSession,
+                               opponent_pokemon: "BattlePokemon",
+                               player_pokemon: "BattlePokemon") -> Optional[discord.File]:
+    """Classic side-on battle scene: opponent upper-right facing player,
+    player's pokemon lower-left (mirrored) facing opponent, HP bars in green
+    (shifting to yellow/red as HP drops) above each."""
+    if not PIL_OK:
+        return None
+
+    canvas = Image.new("RGBA", (CANVAS_W, CANVAS_H), SKY_COLOR)
+    draw = ImageDraw.Draw(canvas)
+    draw.rectangle([0, CANVAS_H - 120, CANVAS_W, CANVAS_H], fill=GROUND_COLOR)
+    draw.ellipse([CANVAS_W * 0.55 - 150, CANVAS_H - 150, CANVAS_W * 0.55 + 150, CANVAS_H - 90],
+                 fill=(130, 190, 75, 255))
+    draw.ellipse([CANVAS_W * 0.14 - 120, CANVAS_H - 95, CANVAS_W * 0.14 + 120, CANVAS_H - 45],
+                 fill=(130, 190, 75, 255))
+
+    opp_sprite = await _fetch_sprite(session, opponent_pokemon.sprite)
+    player_sprite = await _fetch_sprite(session, player_pokemon.sprite)
+
+    if opp_sprite:
+        opp_sprite = opp_sprite.resize(
+            (opp_sprite.width * SPRITE_SCALE, opp_sprite.height * SPRITE_SCALE), Image.NEAREST)
+        canvas.alpha_composite(opp_sprite, (int(CANVAS_W * 0.60), 46))
+
+    if player_sprite:
+        player_sprite = ImageOps.mirror(player_sprite)
+        player_sprite = player_sprite.resize(
+            (player_sprite.width * SPRITE_SCALE, player_sprite.height * SPRITE_SCALE), Image.NEAREST)
+        canvas.alpha_composite(player_sprite, (int(CANVAS_W * 0.06), CANVAS_H - 260))
+
+    _draw_hp_plate(draw, 24, 20, 260, opponent_pokemon.name,
+                    opponent_pokemon.hp, opponent_pokemon.max_hp)
+    _draw_hp_plate(draw, CANVAS_W - 284, CANVAS_H - 140, 260, player_pokemon.name,
+                    player_pokemon.hp, player_pokemon.max_hp)
+
+    buf = io.BytesIO()
+    canvas.convert("RGB").save(buf, format="PNG")
+    buf.seek(0)
+    return discord.File(buf, filename="battle.png")
+
+
 # ── Trainer / pending challenge ─────────────────────────────────────────────
 
 @dataclass
@@ -401,6 +522,7 @@ class Battle:
         return "🟩" * filled + "⬜" * (length - filled)
 
     def status_embed(self) -> discord.Embed:
+        """Text-only fallback, used if Pillow isn't installed."""
         e = discord.Embed(title="⚔️ Battle Status", colour=0x3498DB)
         for t in (self.t1, self.t2):
             p = t.active
@@ -411,6 +533,17 @@ class Battle:
                 inline=False,
             )
         return e
+
+    async def send_status(self):
+        """Posts the battle scene image (opponent-vs-player, HP bars), or
+        falls back to a text embed if Pillow isn't available."""
+        image = await render_battle_scene(self.cog.session, self.t2.active, self.t1.active)
+        if image is None:
+            await self.channel.send(embed=self.status_embed())
+            return
+        caption = (f"**{self.t1.user.display_name}**'s {self.t1.active.name.title()} "
+                   f"vs **{self.t2.user.display_name}**'s {self.t2.active.name.title()}")
+        await self.channel.send(content=caption, file=image)
 
     async def get_move_choice(self, trainer: Trainer) -> int:
         future = asyncio.get_event_loop().create_future()
@@ -454,7 +587,7 @@ class Battle:
         await self.channel.send(text)
 
     async def run(self):
-        await self.channel.send(embed=self.status_embed())
+        await self.send_status()
         while self.t1.alive_team and self.t2.alive_team:
             idx1, idx2 = await asyncio.gather(
                 self.get_move_choice(self.t1), self.get_move_choice(self.t2)
@@ -478,12 +611,13 @@ class Battle:
                             f"{defender.user.display_name} sent out "
                             f"{defender.active.name.title()}!"
                         )
+                        await self.send_status()
                     else:
                         break
 
             if not self.t1.alive_team or not self.t2.alive_team:
                 break
-            await self.channel.send(embed=self.status_embed())
+            await self.send_status()
 
         winner = self.t1 if self.t1.alive_team else self.t2
         loser = self.t2 if winner is self.t1 else self.t1
