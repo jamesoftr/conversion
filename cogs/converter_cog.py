@@ -445,7 +445,7 @@ class ConverterCog(commands.Cog):
         )
         return intro, embeds
 
-    @commands.command(name="convert", help="Reply to a Components V2 message to convert it.")
+    @commands.command(name="convert", aliases=["c"], help="Reply to a Components V2 message to convert it.")
     async def prefix_convert(self, ctx: commands.Context):
         if ctx.message.reference is None:
             await ctx.reply("❌ Please **reply** to the message you want to convert.")
