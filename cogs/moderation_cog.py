@@ -28,8 +28,10 @@ A!mg <hours> [@user]  (alias: A!messagegraph)         → activity chart, any
                                                           custom hour window
 A!mlb [limit]  (alias: A!mleaderboard)                → top users, last 7 days
 
-Graphs are dark-themed. Windows of 48h or less show one bar per hour with an
-hourly-labelled x-axis; longer windows roll up into daily bars.
+Graphs are dark-themed and shown in IST (Asia/Kolkata). Windows of 48h or
+less show one bar per hour with an hourly-labelled x-axis; longer windows
+roll up into daily bars. Data is still stored/queried in UTC internally —
+only the display is converted.
 """
 
 import asyncio
@@ -38,6 +40,7 @@ import re
 import sys
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import discord
 from discord import app_commands
@@ -146,6 +149,19 @@ GRAPH_BAR_EDGE = "#7983f5"
 GRAPH_TEXT    = "#dcddde"
 GRAPH_GRID    = "#404249"
 
+IST = ZoneInfo("Asia/Kolkata")
+
+
+def _to_ist_naive(dt: datetime) -> datetime:
+    """
+    Convert a stored (UTC) bucket timestamp to IST wall-clock time for
+    display. Storage/querying stays in UTC — only the graph reads through
+    this. Returns a naive datetime so matplotlib doesn't re-convert it.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(IST).replace(tzinfo=None)
+
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
@@ -210,12 +226,15 @@ async def _render_activity_graph(guild_id: int, target, hours: int):
 
     hourly = hours <= GRAPH_HOURLY_THRESHOLD
     if hourly:
-        x = [b["hour_start"] for b in buckets]
+        x = [_to_ist_naive(b["hour_start"]) for b in buckets]
         y = [b["count"] for b in buckets]
     else:
+        # roll up by IST calendar day, not UTC day, so "daily" bars match
+        # what the day actually looked like in IST
         daily: dict[str, int] = {}
         for b in buckets:
-            day_key = b["hour_start"].strftime("%Y-%m-%d")
+            ist_dt = _to_ist_naive(b["hour_start"])
+            day_key = ist_dt.strftime("%Y-%m-%d")
             daily[day_key] = daily.get(day_key, 0) + b["count"]
         x = [datetime.strptime(k, "%Y-%m-%d") for k in daily.keys()]
         y = list(daily.values())
@@ -228,7 +247,7 @@ async def _render_activity_graph(guild_id: int, target, hours: int):
     ax.bar(x, y, width=bar_width, color=GRAPH_BAR, edgecolor=GRAPH_BAR_EDGE, linewidth=0.6)
 
     total = sum(y)
-    ax.set_title(f"{target.display_name} — messages (last {hours}h)",
+    ax.set_title(f"{target.display_name} — messages (last {hours}h, IST)",
                  fontsize=13, fontweight="bold")
     ax.set_ylabel("Messages")
 
