@@ -29,10 +29,12 @@ Commands (prefix, assumes bot already has a command_prefix like "!")
 
 !battle @<bot's name> random [count] [>min<max]
     Battle the bot itself instead of another user — no Accept/Decline step,
-    the battle starts immediately. The bot plays its own team with a simple
-    AI (always attacks with its active Pokemon's strongest available move;
-    on a forced switch it sends out its next healthy Pokemon automatically).
-    Only "random" format is supported against the bot.
+    the battle starts immediately. The bot plays its own team with an AI
+    that calculates the expected damage of every available move against the
+    opponent's current active Pokemon — factoring in STAB, type
+    effectiveness, and effective stats — and attacks with whichever move
+    hits hardest; on a forced switch it sends out its next healthy Pokemon
+    automatically. Only "random" format is supported against the bot.
 
 !battle add <name>, <name>, ...
     Add Pokemon (comma-separated, case-insensitive) to your team while a
@@ -705,13 +707,36 @@ class Trainer:
         return [p for p in self.team if not p.fainted]
 
 
-def bot_choose_action(trainer: Trainer) -> tuple:
-    """Very simple battle AI for the bot's own trainer: always attack with
-    whichever of its active Pokemon's (already-curated) moves has the
-    highest raw power. No switching logic beyond forced switches on
-    faint — see Battle.get_forced_switch."""
+def estimate_damage(attacker: BattlePokemon, defender: BattlePokemon, move: dict) -> float:
+    """Deterministic damage estimate for AI move comparison — same formula
+    as calc_damage() but without the random crit roll or the 0.85-1.0
+    damage-roll variance, so moves can be ranked consistently."""
+    power = move.get("power") or 0
+    if power <= 0:
+        return 0.0
+    if move.get("damage_class") == "physical":
+        a, d = attacker.effective_stat("atk"), defender.effective_stat("dfn")
+    else:
+        a, d = attacker.effective_stat("spa"), defender.effective_stat("spd")
+    stab = 1.5 if move.get("type") in attacker.types else 1.0
+    eff = type_multiplier(move.get("type", "normal"), defender.types)
+    if eff == 0:
+        return 0.0
+    base = (((2 * LEVEL / 5 + 2) * power * a / max(d, 1)) / 50 + 2)
+    return base * stab * eff
+
+
+def bot_choose_action(trainer: Trainer, opponent: Trainer) -> tuple:
+    """Battle AI for the bot's own trainer: calculates the expected damage
+    of every move in its active Pokemon's (already-curated) move pool
+    against the opponent's current active Pokemon — factoring in STAB,
+    type effectiveness, and the attacker/defender's effective stats — and
+    attacks with whichever move deals the most damage. No switching logic
+    beyond forced switches on faint — see Battle.get_forced_switch."""
     moves = trainer.active.moves
-    best_idx = max(range(len(moves)), key=lambda i: moves[i].get("power") or 0)
+    defender = opponent.active
+    scores = [estimate_damage(trainer.active, defender, m) for m in moves]
+    best_idx = max(range(len(moves)), key=lambda i: scores[i])
     return ("move", best_idx)
 
 
@@ -950,13 +975,13 @@ class BattlePanel(discord.ui.View):
         self.move_select_t2 = None
         row = 0
         if t1.is_bot:
-            self.actions[t1.user.id] = bot_choose_action(t1)
+            self.actions[t1.user.id] = bot_choose_action(t1, t2)
         else:
             self.move_select_t1 = MoveSelect(t1, self, row=row)
             self.add_item(self.move_select_t1)
             row += 1
         if t2.is_bot:
-            self.actions[t2.user.id] = bot_choose_action(t2)
+            self.actions[t2.user.id] = bot_choose_action(t2, t1)
         else:
             self.move_select_t2 = MoveSelect(t2, self, row=row)
             self.add_item(self.move_select_t2)
