@@ -51,6 +51,11 @@ Commands (prefix, assumes bot already has a command_prefix like "!")
     split into "Vs Humans" (PvP) and "Vs AI" (`!battle @<bot's name>`)
     totals/wins/losses.
 
+!pf ai
+    Shows the BOT's own global record — total battles, wins, and losses
+    across every `!battle @<bot>` fight anyone in the server has played
+    against it. (The flip side of everyone's individual "Vs AI" stats.)
+
 Battle mechanics
 -----------------
 On top of accuracy checks, priority/speed turn order, STAB/type
@@ -1871,11 +1876,38 @@ class BattleCog(commands.Cog, name="Battle"):
             await ctx.send("Nothing to cancel here.")
 
     @commands.command(name="pf")
-    async def battle_profile(self, ctx: commands.Context, member: Optional[discord.Member] = None):
+    async def battle_profile(self, ctx: commands.Context, *, target: Optional[str] = None):
         """!pf [@user] — shows a trainer's battle record (defaults to you),
-        split into PvP results and results against the bot."""
-        member = member or ctx.author
+        split into PvP results and results against the bot.
+        !pf ai — shows the BOT's own global record against everyone in
+        this server (the flip side of everyone's individual Vs AI stats)."""
         guild_id = ctx.guild.id if ctx.guild else 0
+
+        if target and target.strip().lower() in ("ai", "bot", self.bot.user.name.lower()):
+            stats = await _db.get_ai_global_stats(guild_id)
+            embed = discord.Embed(
+                title=f"🤖 {self.bot.user.display_name}'s Battle Record (vs. everyone)",
+                colour=0xE67E22,
+            )
+            embed.add_field(
+                name="Vs All Trainers",
+                value=(f"Total battles: **{stats['total']}**\n"
+                       f"Win: **{stats['ai_wins']}**\n"
+                       f"Loss: **{stats['ai_losses']}**"),
+                inline=False,
+            )
+            await ctx.send(embed=embed)
+            return
+
+        member = ctx.author
+        if target:
+            try:
+                member = await commands.MemberConverter().convert(ctx, target)
+            except commands.BadArgument:
+                await ctx.send(f"Couldn't find a member matching `{target}`. "
+                                f"Try `!pf @user` or `!pf ai`.")
+                return
+
         stats = await _db.get_battle_stats(guild_id, member.id)
 
         embed = discord.Embed(
