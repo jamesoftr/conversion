@@ -142,6 +142,8 @@ TYPE_CHART = {
 FALLBACK_MOVE = {
     "name": "struggle", "power": 50, "accuracy": 100, "pp": 1,
     "type": "normal", "damage_class": "physical", "priority": 0,
+    "effect_chance": None, "stat_changes": [], "drain": 0,
+    "target": "selected-pokemon",
 }
 
 
@@ -200,15 +202,35 @@ async def get_move_data(session: aiohttp.ClientSession, name: str) -> Optional[d
         "type": data["type"]["name"],
         "damage_class": data["damage_class"]["name"],
         "priority": data.get("priority", 0),
+        # Secondary-effect data, used to apply stat drops/boosts and
+        # recoil/drain on top of raw damage.
+        "effect_chance": data.get("effect_chance"),
+        "stat_changes": [
+            {"stat": sc["stat"]["name"], "change": sc["change"]}
+            for sc in (data.get("stat_changes") or [])
+        ],
+        "drain": (data.get("meta") or {}).get("drain", 0),
+        "target": (data.get("target") or {}).get("name", "selected-pokemon"),
     }
     await _col().move_cache.update_one({"_id": key}, {"$set": doc}, upsert=True)
     return doc
 
 
+PRIORITY_MOVE_MIN_POWER = 40  # e.g. Quick Attack/Aqua Jet/Mach Punch-tier or better
+
+
 async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4) -> list:
-    """Return the `count` highest-power damage-dealing moves this Pokemon can
-    learn (status moves excluded). Deterministic — always the strongest
-    moves available, never a random sample."""
+    """Return the `count` best damage-dealing moves this Pokemon can learn
+    (status moves excluded), deterministically — never a random sample.
+
+    Priority is given to raw power, EXCEPT that if the Pokemon can learn a
+    decent-power priority move (priority > 0, power >= PRIORITY_MOVE_MIN_POWER
+    — e.g. Quick Attack, Aqua Jet, Mach Punch, Extreme Speed, Sucker Punch),
+    the single best one of those is guaranteed a slot even if it wouldn't
+    otherwise crack the top `count` by power alone. Priority moves are
+    strategically important (they can strike first regardless of Speed), so
+    a pure power sort would frequently throw them away.
+    """
     pool = data.get("move_pool", [])
     if not pool:
         tackle = await get_move_data(session, "tackle")
@@ -222,12 +244,29 @@ async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4)
         mv for mv in results
         if isinstance(mv, dict) and mv.get("power") and mv.get("damage_class") != "status"
     ]
-    candidates.sort(key=lambda m: m.get("power") or 0, reverse=True)
-    chosen = candidates[:count]
-    if not chosen:
+    if not candidates:
         tackle = await get_move_data(session, "tackle")
-        chosen = [tackle] if tackle else [FALLBACK_MOVE]
-    return chosen
+        return [tackle] if tackle else [FALLBACK_MOVE]
+
+    candidates.sort(key=lambda m: m.get("power") or 0, reverse=True)
+
+    chosen = []
+    priority_candidates = [
+        m for m in candidates
+        if m.get("priority", 0) > 0 and (m.get("power") or 0) >= PRIORITY_MOVE_MIN_POWER
+    ]
+    if priority_candidates:
+        best_priority = max(priority_candidates, key=lambda m: m.get("power") or 0)
+        chosen.append(best_priority)
+
+    for mv in candidates:
+        if len(chosen) >= count:
+            break
+        if mv in chosen:
+            continue
+        chosen.append(mv)
+
+    return chosen[:count]
 
 
 async def build_random_pokemon(session: aiohttp.ClientSession) -> "BattlePokemon":
@@ -257,6 +296,27 @@ def type_multiplier(move_type: str, defender_types: list) -> float:
     return mult
 
 
+# Maps PokeAPI stat names -> the short attribute names BattlePokemon uses.
+# (accuracy/evasion aren't modeled as separate battle stats here, so
+# stat-changing effects that target those are simply ignored.)
+STAT_KEY_MAP = {
+    "attack": "atk", "defense": "dfn",
+    "special-attack": "spa", "special-defense": "spd",
+    "speed": "spe",
+}
+STAT_DISPLAY = {"atk": "Attack", "dfn": "Defense", "spa": "Sp. Atk",
+                "spd": "Sp. Def", "spe": "Speed"}
+
+SELF_KO_MOVES = {"explosion", "self-destruct"}
+
+
+def _stage_multiplier(stage: int) -> float:
+    stage = max(-6, min(6, stage))
+    if stage >= 0:
+        return (2 + stage) / 2
+    return 2 / (2 - stage)
+
+
 class BattlePokemon:
     def __init__(self, data: dict, moves: list):
         self.name = data["name"]
@@ -271,10 +331,17 @@ class BattlePokemon:
         self.spd = _calc_stat(s.get("special-defense", 50))
         self.spe = _calc_stat(s.get("speed", 50))
         self.moves = moves or [FALLBACK_MOVE]
+        # Battle-only stat boosts/drops (-6..+6 stages), reset per battle —
+        # these are what stat-lowering/raising secondary effects modify.
+        self.stat_stages = {"atk": 0, "dfn": 0, "spa": 0, "spd": 0, "spe": 0}
 
     @property
     def fainted(self) -> bool:
         return self.hp <= 0
+
+    def effective_stat(self, key: str) -> float:
+        base = getattr(self, key)
+        return base * _stage_multiplier(self.stat_stages.get(key, 0))
 
 
 def calc_damage(attacker: BattlePokemon, defender: BattlePokemon, move: dict):
@@ -282,9 +349,9 @@ def calc_damage(attacker: BattlePokemon, defender: BattlePokemon, move: dict):
     if power <= 0:
         return 0, 1.0, False
     if move.get("damage_class") == "physical":
-        a, d = attacker.atk, defender.dfn
+        a, d = attacker.effective_stat("atk"), defender.effective_stat("dfn")
     else:
-        a, d = attacker.spa, defender.spd
+        a, d = attacker.effective_stat("spa"), defender.effective_stat("spd")
     stab = 1.5 if move.get("type") in attacker.types else 1.0
     eff = type_multiplier(move.get("type", "normal"), defender.types)
     crit = random.random() < 0.0625
@@ -293,6 +360,61 @@ def calc_damage(attacker: BattlePokemon, defender: BattlePokemon, move: dict):
     base = (((2 * LEVEL / 5 + 2) * power * a / max(d, 1)) / 50 + 2)
     dmg = int(base * stab * eff * crit_mult * rand)
     return max(dmg, 1), eff, crit
+
+
+def _apply_secondary_effects(attacker: BattlePokemon, defender: BattlePokemon, move: dict) -> list:
+    """Applies a move's secondary stat-change effect (e.g. Acid lowering Sp.
+    Def, Superpower lowering the user's own Atk/Def), if any, and returns
+    flavor-text lines describing what happened. Not every move has one —
+    only moves with a `stat_changes` entry in their PokeAPI data do."""
+    stat_changes = move.get("stat_changes") or []
+    if not stat_changes:
+        return []
+
+    chance = move.get("effect_chance")
+    if chance is not None and random.uniform(0, 100) > chance:
+        return []  # secondary effect didn't proc this time
+
+    target_self = move.get("target") == "user"
+    target = attacker if target_self else defender
+
+    lines = []
+    for sc in stat_changes:
+        key = STAT_KEY_MAP.get(sc.get("stat"))
+        if not key:
+            continue  # accuracy/evasion changes aren't modeled
+        delta = sc.get("change", 0)
+        old = target.stat_stages.get(key, 0)
+        new = max(-6, min(6, old + delta))
+        target.stat_stages[key] = new
+        if new == old:
+            continue
+        verb = "rose" if delta > 0 else "fell"
+        emphasis = "sharply " if abs(delta) >= 2 else ""
+        lines.append(f"📉 {target.name.title()}'s {STAT_DISPLAY[key]} {emphasis}{verb}!"
+                      if delta < 0 else
+                      f"📈 {target.name.title()}'s {STAT_DISPLAY[key]} {emphasis}{verb}!")
+    return lines
+
+
+def _apply_drain_recoil(attacker: BattlePokemon, dmg: int, move: dict) -> Optional[str]:
+    """Applies HP-drain (e.g. Giga Drain, positive %) or recoil (e.g. Flare
+    Blitz/Double-Edge/Brave Bird, negative %) based on the move's `drain`
+    percentage, and returns a flavor-text line, or None if the move has
+    neither."""
+    drain = move.get("drain") or 0
+    if not drain or dmg <= 0:
+        return None
+    amount = max(1, int(abs(dmg) * abs(drain) / 100))
+    if drain > 0:
+        healed = min(amount, attacker.max_hp - attacker.hp)
+        if healed <= 0:
+            return None
+        attacker.hp += healed
+        return f"🩸 {attacker.name.title()} drained **{healed}** HP!"
+    else:
+        attacker.hp = max(0, attacker.hp - amount)
+        return f"💢 {attacker.name.title()} is hit by recoil! (**{amount}** dmg)"
 
 
 # ── Battle scene image rendering ────────────────────────────────────────────
@@ -572,15 +694,15 @@ class MoveSelect(discord.ui.Select):
     def __init__(self, trainer: Trainer, panel: "BattlePanel", row: int):
         self.trainer = trainer
         self.panel = panel
-        options = [
-            discord.SelectOption(
+        options = []
+        for i, mv in enumerate(trainer.active.moves):
+            tag = "⚡Priority • " if mv.get("priority", 0) > 0 else ""
+            desc = f"{tag}{mv.get('type', 'normal').title()} • {mv.get('power') or '—'} power"
+            options.append(discord.SelectOption(
                 label=mv["name"].replace("-", " ").title()[:100],
-                description=f"{mv.get('type', 'normal').title()} • "
-                            f"{mv.get('power') or '—'} power"[:100],
+                description=desc[:100],
                 value=str(i),
-            )
-            for i, mv in enumerate(trainer.active.moves)
-        ]
+            ))
         super().__init__(
             placeholder=f"{trainer.user.display_name}: choose {trainer.active.name.title()}'s move",
             min_values=1, max_values=1, options=options, row=row,
@@ -772,15 +894,21 @@ class Battle:
             return await self.channel.send(embed=embed, file=file, **kwargs)
         return await self.channel.send(embed=embed, **kwargs)
 
-    def _execute_move(self, attacker: Trainer, defender: Trainer, move: dict) -> str:
+    def _execute_move(self, attacker: Trainer, defender: Trainer, move: dict) -> list:
+        """Resolves one move: accuracy check, damage, secondary stat
+        effects, recoil/drain, and self-KO moves. Returns a list of
+        flavor-text lines (usually 1-3) describing everything that
+        happened."""
+        move_name = move["name"].replace("-", " ").title()
+
         acc = move.get("accuracy")
         if acc is not None and random.uniform(0, 100) > acc:
-            return (f"❌ {attacker.active.name.title()}'s "
-                    f"{move['name'].replace('-', ' ').title()} missed!")
+            return [f"❌ {attacker.active.name.title()}'s {move_name} missed!"]
+
         dmg, eff, crit = calc_damage(attacker.active, defender.active, move)
         defender.active.hp = max(0, defender.active.hp - dmg)
-        text = (f"➡️ {attacker.active.name.title()} used "
-                f"**{move['name'].replace('-', ' ').title()}**! (**{dmg}** dmg)")
+
+        text = f"➡️ {attacker.active.name.title()} used **{move_name}**! (**{dmg}** dmg)"
         if crit:
             text += " 💫 Critical hit!"
         if eff > 1:
@@ -789,7 +917,19 @@ class Battle:
             text += " It's not very effective..."
         elif eff == 0:
             text += " It had no effect!"
-        return text
+        lines = [text]
+
+        # Self-KO moves: Explosion / Self-Destruct faint the user outright.
+        if move["name"] in SELF_KO_MOVES:
+            attacker.active.hp = 0
+            lines.append(f"💥 {attacker.active.name.title()} was consumed by the blast!")
+        else:
+            recoil_msg = _apply_drain_recoil(attacker.active, dmg, move)
+            if recoil_msg:
+                lines.append(recoil_msg)
+
+        lines.extend(_apply_secondary_effects(attacker.active, defender.active, move))
+        return lines
 
     async def get_forced_switch(self, trainer: Trainer) -> int:
         future = asyncio.get_event_loop().create_future()
@@ -846,12 +986,36 @@ class Battle:
                 if action and action[0] == "move":
                     move = trainer.active.moves[action[1]]
                     movers.append((trainer, opponent, move))
-            movers.sort(key=lambda o: (o[2].get("priority", 0), o[0].active.spe), reverse=True)
+            # Priority moves always go first; ties within the same priority
+            # bracket go to the faster Pokemon (using effective, stage-
+            # boosted Speed); true speed ties are broken randomly each turn
+            # rather than always favoring the same trainer. Whichever
+            # Pokemon moves first and knocks out the other's active Pokemon
+            # denies it a turn entirely — the slower Pokemon's move is
+            # skipped if it's already fainted by the time its turn comes up.
+            movers.sort(
+                key=lambda o: (o[2].get("priority", 0), o[0].active.effective_stat("spe"), random.random()),
+                reverse=True,
+            )
 
             for attacker, defender, move in movers:
                 if attacker.active.fainted or defender.active.fainted:
                     continue
-                lines.append(self._execute_move(attacker, defender, move))
+                move_name = move["name"]
+                lines.extend(self._execute_move(attacker, defender, move))
+
+                if attacker.active.fainted and move_name not in SELF_KO_MOVES:
+                    # Fainted from its own recoil.
+                    lines.append(f"💥 {attacker.active.name.title()} fainted from recoil!")
+                if attacker.active.fainted:
+                    if attacker.alive_team:
+                        new_idx = await self.get_forced_switch(attacker)
+                        attacker.active_idx = new_idx
+                        lines.append(
+                            f"{attacker.user.display_name} sent out "
+                            f"**{attacker.active.name.title()}**!"
+                        )
+
                 if defender.active.fainted:
                     lines.append(f"💥 {defender.active.name.title()} fainted!")
                     if defender.alive_team:
