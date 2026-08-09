@@ -46,10 +46,16 @@ Commands (prefix, assumes bot already has a command_prefix like "!")
 
 Battle flow / UI
 -----------------
-All Pokemon battle at LEVEL 100. Each round, ONE message is posted per
-turn: a battle-scene image (both Pokemon with an HP bar rendered directly
-above their sprite), the turn number, the *previous* turn's damage
-results, and a single view containing:
+All Pokemon battle at LEVEL 100. Each turn is posted as three separate
+messages, paced 3 seconds apart so it reads cleanly instead of one
+crowded message:
+
+    1. The battle scene image on its own (both Pokemon with an HP bar
+       above their sprite).
+    2. A plain text-only embed recapping the previous turn's results
+       (damage dealt, switches, etc.) — skipped on turn 1.
+    3. The actionable panel: the same image again, alongside each
+       trainer's current Pokemon/HP and a single view containing:
 
     • a move dropdown for trainer 1
     • a move dropdown for trainer 2
@@ -1029,6 +1035,28 @@ class Battle:
                              inline=False)
         return embed, file
 
+    async def build_scene_embed(self, turn: int):
+        """Just the battle scene image on its own — the first thing posted
+        each turn, before results and the action panel, so the reveal
+        reads as a clean beat instead of one crowded message."""
+        file = await render_battle_scene(self.cog.session, self.t2.active, self.t1.active)
+        embed = discord.Embed(title=f"⚔️ Turn {turn}", colour=0x3498DB)
+        if file is not None:
+            embed.set_image(url="attachment://battle.png")
+        else:
+            embed.description = "⚠️ Pillow isn't installed — image disabled."
+        return embed, file
+
+    def build_results_embed(self, last_summary: str) -> discord.Embed:
+        """Plain text-only embed recapping the previous turn's damage,
+        switches, etc. — sent on its own between the scene reveal and the
+        next action panel."""
+        return discord.Embed(
+            title="📋 Last Turn's Results",
+            description=last_summary[:4096],
+            colour=0x95A5A6,
+        )
+
     async def _send_embed(self, embed: discord.Embed, file: Optional[discord.File], **kwargs):
         if file is not None:
             return await self.channel.send(embed=embed, file=file, **kwargs)
@@ -1096,8 +1124,22 @@ class Battle:
         last_summary: Optional[str] = None
 
         while self.t1.alive_team and self.t2.alive_team:
+            # 1) Reveal the battle scene image on its own — a clean beat
+            #    before the results and action panel land.
+            scene_embed, scene_file = await self.build_scene_embed(turn)
+            await self._send_embed(scene_embed, scene_file)
+            await asyncio.sleep(3)
+
+            # 2) Recap last turn's results as a plain text-only embed
+            #    (nothing to recap yet on turn 1).
+            if last_summary:
+                await self.channel.send(embed=self.build_results_embed(last_summary))
+                await asyncio.sleep(3)
+
+            # 3) The actual actionable panel: image + trainer info + move
+            #    dropdowns, same as before.
             panel = BattlePanel(self.t1, self.t2)
-            embed, file = await self.build_embed(turn, last_summary)
+            embed, file = await self.build_embed(turn, None)
             msg = await self._send_embed(
                 embed, file,
                 content=f"{self.t1.user.mention} {self.t2.user.mention} — choose your action.",
