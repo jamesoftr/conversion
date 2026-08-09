@@ -1374,3 +1374,30 @@ async def get_battle_stats(guild_id: int, user_id: int) -> dict:
         stats[f"{prefix}_wins"]   = wins
         stats[f"{prefix}_losses"] = total - wins
     return stats
+
+
+async def get_ai_global_stats(guild_id: int) -> dict:
+    """
+    The bot's own all-time record against every human trainer in a guild —
+    the flip side of each individual trainer's "Vs AI" numbers from
+    get_battle_stats(). Returns:
+      {"total": int, "ai_wins": int, "ai_losses": int}
+    where ai_wins/ai_losses are counted from the BOT's perspective (a
+    battle_results doc's "won" field is from the human's perspective, so
+    the bot won whenever the human's doc has won=False).
+    """
+    db = get_db()
+    pipeline = [
+        {"$match": {"guild_id": guild_id, "vs_ai": True}},
+        {"$group": {
+            "_id":        None,
+            "total":      {"$sum": 1},
+            "human_wins": {"$sum": {"$cond": ["$won", 1, 0]}},
+        }},
+    ]
+    result = await db.battle_results.aggregate(pipeline).to_list(1)
+    if not result:
+        return {"total": 0, "ai_wins": 0, "ai_losses": 0}
+    total = result[0]["total"]
+    human_wins = result[0]["human_wins"]
+    return {"total": total, "ai_wins": total - human_wins, "ai_losses": human_wins}
