@@ -12,13 +12,27 @@ re-hit the API. Uses the same `db.get_db()` pattern as welcome_cog.py.
 
 Commands (prefix, assumes bot already has a command_prefix like "!")
 ----------------------------------------------------------------------
-!battle @user [format] [count]
+!battle @user [format] [count] [>min<max]
     format : "random" (default) or "custom"
     count  : 1-6 pokemon per side (default 3)
+    >min<max : optional, "random" format only — restricts every rolled
+               Pokemon to one whose base stat total (BST, i.e. the sum of
+               its 6 base stats) falls in this range. Either bound can be
+               omitted: ">550" means BST >= 550, "<700" means BST <= 700,
+               ">590<700" means both. E.g. `!battle @rival random 3 >590<700`
+               only rolls Pokemon roughly in the legendary/pseudo-legendary
+               BST range.
     Posts a challenge with Accept / Decline buttons for the opponent.
     - random  → both teams are auto-rolled and the battle starts immediately
                 on accept.
     - custom  → both trainers then build their own team with `!battle add`.
+
+!battle @<bot's name> random [count] [>min<max]
+    Battle the bot itself instead of another user — no Accept/Decline step,
+    the battle starts immediately. The bot plays its own team with a simple
+    AI (always attacks with its active Pokemon's strongest available move;
+    on a forced switch it sends out its next healthy Pokemon automatically).
+    Only "random" format is supported against the bot.
 
 !battle add <name>, <name>, ...
     Add Pokemon (comma-separated, case-insensitive) to your team while a
@@ -71,6 +85,7 @@ available — not a random sample.
 import asyncio
 import io
 import random
+import re
 import sys
 from dataclasses import dataclass, field
 from typing import Optional
@@ -269,7 +284,102 @@ async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4)
     return chosen[:count]
 
 
-async def build_random_pokemon(session: aiohttp.ClientSession) -> "BattlePokemon":
+# ── Base stat total (BST) filtering for `random` battles ───────────────────
+# "BST" here = sum of a Pokemon's 6 base stats (hp/atk/dfn/spa/spd/spe), the
+# same number people mean when they say e.g. "Dragonite has 600 BST". This
+# has nothing to do with IVs — the cog doesn't model IVs at all; every
+# Pokemon battles with the same fixed stat calc (see _calc_stat).
+
+BST_FILTER_RE = re.compile(r'([<>])\s*=?\s*(\d+)')
+BST_MAX_ROLL_ATTEMPTS = 120  # random dex-id rolls to try before giving up
+
+
+def parse_bst_filter(raw: Optional[str]):
+    """Parse a trailing threshold string like '>550', '<700', or
+    '>590<700' into (min_total, max_total). Either or both may end up
+    None. Returns (None, None) for a falsy/unrecognized input."""
+    if not raw:
+        return None, None
+    min_total = max_total = None
+    for sign, num in BST_FILTER_RE.findall(raw):
+        if sign == ">":
+            min_total = int(num)
+        else:
+            max_total = int(num)
+    return min_total, max_total
+
+
+def format_bst_filter(min_total: Optional[int], max_total: Optional[int]) -> str:
+    if min_total is None and max_total is None:
+        return ""
+    lo = min_total if min_total is not None else 0
+    hi = max_total if max_total is not None else "∞"
+    return f" (BST filter: {lo}–{hi})"
+
+
+def _bst(stats: dict) -> int:
+    return sum(stats.values())
+
+
+async def _find_cached_bst_match(min_total: Optional[int], max_total: Optional[int]) -> Optional[dict]:
+    """Try to grab a random already-cached Pokemon whose BST is in range,
+    via a Mongo aggregation, so repeat rolls with the same/overlapping
+    filter get fast once the cache has warmed up. Returns None (falls
+    back to rolling PokeAPI dex ids) if nothing matches yet."""
+    conditions = {}
+    if min_total is not None:
+        conditions["$gte"] = min_total
+    if max_total is not None:
+        conditions["$lte"] = max_total
+    if not conditions:
+        return None
+    pipeline = [
+        {"$addFields": {"_bst": {"$sum": {"$map": {
+            "input": {"$objectToArray": "$stats"}, "as": "s", "in": "$$s.v"
+        }}}}},
+        {"$match": {"_bst": conditions}},
+        {"$sample": {"size": 1}},
+    ]
+    async for doc in _col().pokedex_cache.aggregate(pipeline):
+        return doc
+    return None
+
+
+async def build_random_pokemon(session: aiohttp.ClientSession,
+                                min_total: Optional[int] = None,
+                                max_total: Optional[int] = None) -> "BattlePokemon":
+    if min_total is not None or max_total is not None:
+        cached = await _find_cached_bst_match(min_total, max_total)
+        if cached:
+            moves = await pick_moves(session, cached)
+            return BattlePokemon(cached, moves)
+
+        # Nothing cached matches yet — roll random dex ids and check each
+        # one's BST, caching every fetch as we go (get_pokemon_data does
+        # this automatically) so future rolls find matches instantly via
+        # the aggregation above.
+        last_valid = None
+        for _ in range(BST_MAX_ROLL_ATTEMPTS):
+            dex_id = random.randint(1, 1025)
+            data = await get_pokemon_data(session, str(dex_id))
+            if not data:
+                continue
+            last_valid = data
+            total = _bst(data.get("stats", {}))
+            if min_total is not None and total < min_total:
+                continue
+            if max_total is not None and total > max_total:
+                continue
+            moves = await pick_moves(session, data)
+            return BattlePokemon(data, moves)
+
+        # Gave up after BST_MAX_ROLL_ATTEMPTS tries (filter is too narrow
+        # for what's been rolled) — fall back to the last valid Pokemon
+        # seen rather than erroring out mid battle-build.
+        data = last_valid or await get_pokemon_data(session, "pikachu")
+        moves = await pick_moves(session, data)
+        return BattlePokemon(data, moves)
+
     for _ in range(6):
         dex_id = random.randint(1, 1025)
         data = await get_pokemon_data(session, str(dex_id))
@@ -547,6 +657,7 @@ class Trainer:
     user: discord.abc.User
     team: list = field(default_factory=list)
     active_idx: int = 0
+    is_bot: bool = False  # True for the bot's own side in a `!battle @bot` fight
 
     @property
     def active(self) -> BattlePokemon:
@@ -557,6 +668,16 @@ class Trainer:
         return [p for p in self.team if not p.fainted]
 
 
+def bot_choose_action(trainer: Trainer) -> tuple:
+    """Very simple battle AI for the bot's own trainer: always attack with
+    whichever of its active Pokemon's (already-curated) moves has the
+    highest raw power. No switching logic beyond forced switches on
+    faint — see Battle.get_forced_switch."""
+    moves = trainer.active.moves
+    best_idx = max(range(len(moves)), key=lambda i: moves[i].get("power") or 0)
+    return ("move", best_idx)
+
+
 @dataclass
 class PendingChallenge:
     challenger: discord.Member
@@ -565,6 +686,7 @@ class PendingChallenge:
     count: int
     accepted: bool = False
     teams: dict = field(default_factory=dict)
+    bst_filter: tuple = (None, None)
 
 
 # ── UI: challenge accept/decline ────────────────────────────────────────────
@@ -784,12 +906,30 @@ class BattlePanel(discord.ui.View):
         self.event = asyncio.Event()
         self.message: Optional[discord.Message] = None
 
-        self.move_select_t1 = MoveSelect(t1, self, row=0)
-        self.move_select_t2 = MoveSelect(t2, self, row=1)
-        self.add_item(self.move_select_t1)
-        self.add_item(self.move_select_t2)
+        # A bot-controlled trainer gets no dropdown and no wait — its move
+        # is decided immediately via bot_choose_action() instead of a
+        # component interaction, since nobody is going to click for it.
+        self.move_select_t1 = None
+        self.move_select_t2 = None
+        row = 0
+        if t1.is_bot:
+            self.actions[t1.user.id] = bot_choose_action(t1)
+        else:
+            self.move_select_t1 = MoveSelect(t1, self, row=row)
+            self.add_item(self.move_select_t1)
+            row += 1
+        if t2.is_bot:
+            self.actions[t2.user.id] = bot_choose_action(t2)
+        else:
+            self.move_select_t2 = MoveSelect(t2, self, row=row)
+            self.add_item(self.move_select_t2)
+            row += 1
+
         self.add_item(SwitchButton(self))
         self.add_item(PassButton(self))
+
+        if len(self.actions) == 2 and not self.event.is_set():
+            self.event.set()
 
     def trainer_for(self, user_id: int) -> Optional[Trainer]:
         if user_id == self.t1.user.id:
@@ -932,6 +1072,11 @@ class Battle:
         return lines
 
     async def get_forced_switch(self, trainer: Trainer) -> int:
+        if trainer.is_bot:
+            # No UI to show — just send out its next healthy Pokemon.
+            for i, p in enumerate(trainer.team):
+                if not p.fainted:
+                    return i
         future = asyncio.get_event_loop().create_future()
         view = ForcedSwitchView(trainer, future)
         await self.channel.send(
@@ -1060,12 +1205,22 @@ class BattleCog(commands.Cog, name="Battle"):
     @commands.group(name="battle", invoke_without_command=True)
     async def battle(self, ctx: commands.Context,
                       opponent: Optional[discord.Member] = None,
-                      fmt: str = "random", count: int = 3):
+                      fmt: str = "random", count: int = 3,
+                      *, bst_filter: Optional[str] = None):
         if opponent is None:
-            await ctx.send("Usage: `!battle @user [random|custom] [count 1-6]`")
+            await ctx.send(
+                "Usage: `!battle @user [random|custom] [count 1-6] [>min<max]`\n"
+                "The `>min<max` part is optional and filters `random` teams by "
+                "base stat total, e.g. `!battle @user random 3 >590<700`. You "
+                "can also battle me directly: `!battle @<my name> random 3 >550`."
+            )
             return
-        if opponent.bot or opponent.id == ctx.author.id:
-            await ctx.send("Pick a real opponent (not yourself or a bot).")
+        if opponent.id == ctx.author.id:
+            await ctx.send("Pick a real opponent (not yourself).")
+            return
+        battling_bot = opponent.id == self.bot.user.id
+        if opponent.bot and not battling_bot:
+            await ctx.send("Pick a real opponent (not another bot).")
             return
         if ctx.channel.id in self.pending or ctx.channel.id in self.active_battles:
             await ctx.send(
@@ -1078,15 +1233,39 @@ class BattleCog(commands.Cog, name="Battle"):
         if fmt not in ("random", "custom"):
             await ctx.send("Format must be `random` or `custom`.")
             return
+        if battling_bot and fmt != "random":
+            await ctx.send("You can only battle me in `random` format.")
+            return
         count = max(1, min(6, count))
+        min_total, max_total = parse_bst_filter(bst_filter)
+        if bst_filter and fmt == "custom" and (min_total is not None or max_total is not None):
+            await ctx.send("⚠️ The BST filter only applies to `random` teams — ignoring it for this custom battle.")
 
-        self.pending[ctx.channel.id] = PendingChallenge(ctx.author, opponent, fmt, count)
+        if battling_bot:
+            filt_note = format_bst_filter(min_total, max_total)
+            await ctx.send(
+                f"🎲 Rolling random teams — {ctx.author.mention} vs me!{filt_note}"
+            )
+            t1 = Trainer(ctx.author)
+            t2 = Trainer(self.bot.user, is_bot=True)
+            for _ in range(count):
+                t1.team.append(await build_random_pokemon(self.session, min_total, max_total))
+                t2.team.append(await build_random_pokemon(self.session, min_total, max_total))
+            battle = Battle(self, ctx.channel, t1, t2)
+            self.active_battles[ctx.channel.id] = battle
+            await battle.run()
+            return
+
+        self.pending[ctx.channel.id] = PendingChallenge(
+            ctx.author, opponent, fmt, count, bst_filter=(min_total, max_total)
+        )
 
         view = ChallengeView(self, ctx.author, opponent, fmt, count)
         view._channel_id = ctx.channel.id
+        filt_note = format_bst_filter(min_total, max_total) if fmt == "random" else ""
         await ctx.send(
             f"⚔️ {ctx.author.mention} has challenged {opponent.mention} to a "
-            f"**{fmt}** battle ({count} pokemon each, Level {LEVEL})! "
+            f"**{fmt}** battle ({count} pokemon each, Level {LEVEL}){filt_note}! "
             f"{opponent.mention}, do you accept?",
             view=view,
         )
@@ -1097,11 +1276,13 @@ class BattleCog(commands.Cog, name="Battle"):
             return
 
         if fmt == "random":
-            await channel.send("🎲 Rolling random teams...")
+            min_total, max_total = pending.bst_filter
+            filt_note = format_bst_filter(min_total, max_total)
+            await channel.send(f"🎲 Rolling random teams...{filt_note}")
             t1, t2 = Trainer(challenger), Trainer(opponent)
             for _ in range(count):
-                t1.team.append(await build_random_pokemon(self.session))
-                t2.team.append(await build_random_pokemon(self.session))
+                t1.team.append(await build_random_pokemon(self.session, min_total, max_total))
+                t2.team.append(await build_random_pokemon(self.session, min_total, max_total))
             self.pending.pop(channel.id, None)
             battle = Battle(self, channel, t1, t2)
             self.active_battles[channel.id] = battle
