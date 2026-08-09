@@ -16,12 +16,19 @@ Requirements
 • "Message Content Intent" MUST be enabled in the Discord Developer Portal
   and in your bot's `intents` (intents.message_content = True), or the NSFW
   filter will not see any message text.
-• matplotlib must be installed for /moderation graph to work.
+• matplotlib must be installed for graphs to work (pip install matplotlib).
+• Prefix commands assume your bot's command_prefix is already set to "A!"
+  in your main bot file — this cog doesn't set it.
 
-Slash commands (all require Manage Guild)
------------------------------------------
+Commands — open to everyone, no permission requirement
+--------------------------------------------------------
 /moderation graph        user  period(24h/12h/7d)   → activity chart (image)
 /moderation leaderboard  limit                        → top users, last 7 days
+A!mg <hours> [@user]  (alias: A!messagegraph)         → activity chart, any
+                                                          custom hour window
+
+Graphs are dark-themed. Windows of 48h or less show one bar per hour with an
+hourly-labelled x-axis; longer windows roll up into daily bars.
 """
 
 import asyncio
@@ -124,6 +131,19 @@ NSFW_REGEX = _build_nsfw_regex(NSFW_WORDS)
 # ── Activity bucket settings ─────────────────────────────────────────────────
 RETENTION_DAYS = 7
 RETENTION_SECONDS = RETENTION_DAYS * 24 * 3600
+MAX_GRAPH_HOURS = RETENTION_DAYS * 24  # can't graph further back than data is kept
+
+# At or under this many hours, the graph shows one bar PER HOUR with an
+# hourly x-axis. Above it, bars roll up to one-per-day for readability.
+GRAPH_HOURLY_THRESHOLD = 48
+
+# Discord dark-theme palette for graphs
+GRAPH_BG      = "#1e1f22"
+GRAPH_PLOT_BG = "#2b2d31"
+GRAPH_BAR     = "#5865F2"
+GRAPH_BAR_EDGE = "#7983f5"
+GRAPH_TEXT    = "#dcddde"
+GRAPH_GRID    = "#404249"
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -157,6 +177,76 @@ async def _get_leaderboard(guild_id: int, limit: int) -> list[dict]:
     ]
     cursor = _col().mod_activity_hourly.aggregate(pipeline)
     return await cursor.to_list(length=None)
+
+
+def _apply_dark_theme(fig, ax) -> None:
+    fig.patch.set_facecolor(GRAPH_BG)
+    ax.set_facecolor(GRAPH_PLOT_BG)
+    ax.tick_params(colors=GRAPH_TEXT, labelsize=9)
+    ax.xaxis.label.set_color(GRAPH_TEXT)
+    ax.yaxis.label.set_color(GRAPH_TEXT)
+    ax.title.set_color("#ffffff")
+    for spine in ax.spines.values():
+        spine.set_color(GRAPH_GRID)
+    ax.grid(axis="y", color=GRAPH_GRID, alpha=0.6, linewidth=0.6)
+    ax.set_axisbelow(True)
+
+
+async def _render_activity_graph(guild_id: int, target, hours: int):
+    """
+    Build a dark-themed activity chart for `target` over the last `hours`
+    hours. Returns (discord.File, total_messages), or (None, 0) if there's
+    no tracked data in that window.
+
+    hours <= GRAPH_HOURLY_THRESHOLD -> one bar per hour, hourly x-axis ticks.
+    hours >  GRAPH_HOURLY_THRESHOLD -> rolled up into one bar per day.
+    """
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(hours=hours)
+    buckets = await _get_user_buckets(guild_id, target.id, since)
+    if not buckets:
+        return None, 0
+
+    hourly = hours <= GRAPH_HOURLY_THRESHOLD
+    if hourly:
+        x = [b["hour_start"] for b in buckets]
+        y = [b["count"] for b in buckets]
+    else:
+        daily: dict[str, int] = {}
+        for b in buckets:
+            day_key = b["hour_start"].strftime("%Y-%m-%d")
+            daily[day_key] = daily.get(day_key, 0) + b["count"]
+        x = [datetime.strptime(k, "%Y-%m-%d") for k in daily.keys()]
+        y = list(daily.values())
+
+    fig_width = max(8, min(22, len(x) * 0.35))
+    fig, ax = plt.subplots(figsize=(fig_width, 4.5))
+    _apply_dark_theme(fig, ax)
+
+    bar_width = 0.03 if hourly else 0.7
+    ax.bar(x, y, width=bar_width, color=GRAPH_BAR, edgecolor=GRAPH_BAR_EDGE, linewidth=0.6)
+
+    total = sum(y)
+    ax.set_title(f"{target.display_name} — messages (last {hours}h)",
+                 fontsize=13, fontweight="bold")
+    ax.set_ylabel("Messages")
+
+    if hourly:
+        ax.xaxis.set_major_locator(mdates.HourLocator(interval=1))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+    else:
+        ax.xaxis.set_major_locator(mdates.DayLocator(interval=1))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+
+    fig.autofmt_xdate(rotation=45)
+    fig.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=140, facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+
+    return discord.File(buf, filename="activity.png"), total
 
 
 class ModerationCog(commands.Cog):
@@ -224,12 +314,46 @@ class ModerationCog(commands.Cog):
         finally:
             self._pending_checks.pop(message_id, None)
 
-    # ── Slash commands ────────────────────────────────────────────────────────
+    # ── Prefix command: A!mg <hours> [@user]  (alias A!messagegraph) ──────────
+
+    @commands.command(name="mg", aliases=["messagegraph"])
+    async def messagegraph_prefix(
+        self,
+        ctx: commands.Context,
+        hours: int,
+        member: Optional[discord.Member] = None,
+    ):
+        if not MPL_OK:
+            await ctx.send("⚠️ matplotlib isn't installed on the bot host, so graphs are unavailable.")
+            return
+        if hours <= 0:
+            await ctx.send("Hours must be a positive number.")
+            return
+        if hours > MAX_GRAPH_HOURS:
+            await ctx.send(
+                f"Activity data is only kept for {RETENTION_DAYS} days "
+                f"({MAX_GRAPH_HOURS}h) — showing the full window instead."
+            )
+            hours = MAX_GRAPH_HOURS
+
+        target = member or ctx.author
+        async with ctx.typing():
+            file, total = await _render_activity_graph(ctx.guild.id, target, hours)
+
+        if file is None:
+            await ctx.send(f"No tracked activity for **{target.display_name}** in the last {hours}h.")
+            return
+
+        await ctx.send(
+            content=f"**{total}** messages from **{target.display_name}** (last {hours}h):",
+            file=file,
+        )
+
+    # ── Slash commands — open to everyone ─────────────────────────────────────
 
     grp = app_commands.Group(
         name="moderation",
         description="Message activity graphs and leaderboard",
-        default_permissions=discord.Permissions(manage_guild=True),
     )
 
     @grp.command(name="graph", description="Show a message-activity graph for a user.")
@@ -254,54 +378,18 @@ class ModerationCog(commands.Cog):
 
         await interaction.response.defer()
         target = user or interaction.user
-        now = datetime.now(timezone.utc)
+        hours = {"24h": 24, "12h": 12, "7d": 168}[period.value]
 
-        if period.value == "24h":
-            since = now - timedelta(hours=24)
-        elif period.value == "12h":
-            since = now - timedelta(hours=12)
-        else:
-            since = now - timedelta(days=7)
-
-        buckets = await _get_user_buckets(interaction.guild_id, target.id, since)
-
-        if not buckets:
+        file, total = await _render_activity_graph(interaction.guild_id, target, hours)
+        if file is None:
             await interaction.followup.send(
                 f"No tracked activity for **{target.display_name}** in that window."
             )
             return
 
-        if period.value == "7d":
-            # roll hourly buckets up into daily totals
-            daily: dict[str, int] = {}
-            for b in buckets:
-                day_key = b["hour_start"].strftime("%Y-%m-%d")
-                daily[day_key] = daily.get(day_key, 0) + b["count"]
-            x = [datetime.strptime(k, "%Y-%m-%d") for k in daily.keys()]
-            y = list(daily.values())
-            date_fmt = mdates.DateFormatter("%b %d")
-        else:
-            x = [b["hour_start"] for b in buckets]
-            y = [b["count"] for b in buckets]
-            date_fmt = mdates.DateFormatter("%H:%M")
-
-        fig, ax = plt.subplots(figsize=(8, 4))
-        ax.bar(x, y, width=0.03 if period.value != "7d" else 0.7, color="#5865F2")
-        ax.set_title(f"{target.display_name} — messages ({period.name})")
-        ax.set_ylabel("Messages")
-        ax.xaxis.set_major_formatter(date_fmt)
-        fig.autofmt_xdate()
-        fig.tight_layout()
-
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=140)
-        plt.close(fig)
-        buf.seek(0)
-
-        total = sum(y)
         await interaction.followup.send(
             content=f"**{total}** messages from **{target.display_name}** ({period.name.lower()}):",
-            file=discord.File(buf, filename="activity.png"),
+            file=file,
         )
 
     @grp.command(name="leaderboard", description="Top users by message count (last 7 days).")
@@ -331,4 +419,3 @@ class ModerationCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ModerationCog(bot))
-
