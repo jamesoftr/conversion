@@ -2362,7 +2362,7 @@ class BattleCog(commands.Cog, name="Battle"):
         battle.forfeit_reason = "forfeit"
         await ctx.send(f"🏳️ {ctx.author.display_name} forfeits the battle!")
 
-    @commands.command(name="pf")
+    @commands.command(name="bpf")
     async def battle_profile(self, ctx: commands.Context, *, target: Optional[str] = None):
         """!pf [@user] — shows a trainer's battle record (defaults to you),
         split into PvP results and results against the bot.
