@@ -13,6 +13,7 @@ from .constants import (
     HELD_ITEMS, ITEM_ASSIGN_CHANCE, STAT_KEY_MAP, STAT_DISPLAY,
     STATUS_INDUCING_AILMENTS, STATUS_VERB, STATUS_EMOJI, STATUS_TYPE_IMMUNITY,
     SLEEP_MIN_TURNS, SLEEP_MAX_TURNS, _calc_stat, type_multiplier, _stage_multiplier,
+    FAKE_OUT_MOVE, SELF_STAT_LOWERING_MOVES,
 )
 
 
@@ -61,9 +62,21 @@ class BattlePokemon:
         self.must_recharge = False
         # Major status condition: None, "burn", "paralysis", "poison",
         # "sleep", or "freeze". status_counter is only meaningful for sleep
-        # (counts down the number of turns left asleep).
+        # (counts down the number of turns left asleep). Deliberately NOT
+        # reset on switch-out — a burn/poison/etc. sticks with the Pokemon
+        # on the bench, same as the mainline games.
         self.status: Optional[str] = None
         self.status_counter: int = 0
+        # Set for exactly one turn when hit by a flinch-inducing move
+        # (Fake Out, a lucky Air Slash, ...) — consumed (and cleared) the
+        # moment this Pokemon's own turn comes up, skipping its move.
+        self.flinched: bool = False
+        # True only for the turn(s) before this Pokemon has taken its
+        # first action since being sent out — Fake Out only works while
+        # this is True. Reset to True every time it's freshly switched in
+        # (including the initial send-out), and flipped False the moment
+        # its turn comes up, whether or not it actually got to move.
+        self.first_turn: bool = True
         # One ability, randomly chosen from this species' non-hidden
         # abilities (if any were fetched/cached). Only a handful of common,
         # high-impact abilities are actually modeled — see KNOWN_ABILITIES.
@@ -78,6 +91,12 @@ class BattlePokemon:
     @property
     def fainted(self) -> bool:
         return self.hp <= 0
+
+    def reset_stat_stages(self) -> None:
+        """Wipes all battle-only stat boosts/drops back to 0 — called when
+        this Pokemon switches OUT. Unlike status ailments, stat stage
+        changes do NOT carry over to the next time it's sent back in."""
+        self.stat_stages = {"atk": 0, "dfn": 0, "spa": 0, "spd": 0, "spe": 0}
 
     def effective_stat(self, key: str) -> float:
         base = getattr(self, key)
@@ -123,7 +142,16 @@ def _apply_secondary_effects(attacker: BattlePokemon, defender: BattlePokemon, m
     if chance is not None and random.uniform(0, 100) > chance:
         return []  # secondary effect didn't proc this time
 
-    target_self = move.get("target") == "user"
+    # PokeAPI's `target` field describes who takes the move's *damage*, not
+    # who eats its secondary stat change — that's fine for pure status
+    # moves (Swords Dance/Growl/Leer all have target == "user" for
+    # self-buffs, "selected-pokemon" for foe-debuffs, and those line up),
+    # but it's wrong for damage moves whose recoil drops the USER's own
+    # stat (Leaf Storm, Overheat, Superpower, ...) — those still target
+    # "selected-pokemon" because that's who gets hit by the damage, even
+    # though the stat drop applies to the attacker. SELF_STAT_LOWERING_MOVES
+    # patches that gap for the common cases.
+    target_self = move.get("target") == "user" or move.get("name") in SELF_STAT_LOWERING_MOVES
     target = attacker if target_self else defender
 
     lines = []
@@ -172,6 +200,22 @@ def _apply_status_ailment(attacker: BattlePokemon, defender: BattlePokemon, move
     if ailment == "sleep":
         target.status_counter = random.randint(SLEEP_MIN_TURNS, SLEEP_MAX_TURNS)
     return f"{STATUS_EMOJI[ailment]} {target.name.title()} {STATUS_VERB[ailment]}!"
+
+
+def _apply_flinch(attacker: BattlePokemon, defender: BattlePokemon, move: dict) -> None:
+    """Sets defender.flinched if this move's flinch effect procs — Fake
+    Out always flinches (subject to its own first-turn-only restriction,
+    handled by the caller before this ever runs), everything else
+    (Air Slash, Rock Slide, a King's Rock-less Iron Head, ...) rolls its
+    `flinch_chance` from PokeAPI. Doesn't return a message: flinch is
+    silent when inflicted, and only shows up as a line when it actually
+    prevents the target's move next."""
+    if move.get("name") == FAKE_OUT_MOVE:
+        defender.flinched = True
+        return
+    chance = move.get("flinch_chance") or 0
+    if chance and random.uniform(0, 100) < chance:
+        defender.flinched = True
 
 
 def _status_precheck(pokemon: BattlePokemon) -> tuple:
