@@ -2,7 +2,7 @@
 cogs/battle/trainer_ai.py
 ────────────────────────────
 Trainer/PendingChallenge dataclasses and the `!battle ai` opponent AI
-(move scoring + voluntary switching).
+(move scoring +  voluntary switching).
 """
 
 from dataclasses import dataclass, field
@@ -97,6 +97,9 @@ def bot_choose_action(trainer: Trainer, opponent: Trainer) -> tuple:
     defender = opponent.active
     moves = active.moves
 
+    if active.must_recharge:
+        return ("recharge", None)
+
     available = [i for i, m in enumerate(moves) if m.get("current_pp", 1) > 0]
     if not available:
         best_idx = -1
@@ -130,4 +133,3 @@ class PendingChallenge:
     accepted: bool = False
     teams: dict = field(default_factory=dict)
     bst_filter: tuple = (None, None)
-
