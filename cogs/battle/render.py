@@ -12,7 +12,7 @@ from typing import Optional, TYPE_CHECKING
 import aiohttp
 import discord
 
-from .constants import PIL_OK, LEVEL, CANVAS_W, CANVAS_H, SPRITE_SCALE
+from .constants import PIL_OK, LEVEL, CANVAS_W, CANVAS_H, SPRITE_SCALE, STAT_DISPLAY, _stage_multiplier
 
 if PIL_OK:
     from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -98,10 +98,18 @@ async def _fetch_sprite(session: aiohttp.ClientSession, url: str):
 
 
 def _draw_hp_bar_above(draw: "ImageDraw.ImageDraw", center_x: float, sprite_top_y: float,
-                        name: str, hp: int, max_hp: int, width: int = 190):
-    """Draws a compact name+HP-bar plate directly above a sprite's position."""
+                        name: str, hp: int, max_hp: int, stat_stages: Optional[dict] = None,
+                        width: int = 190):
+    """Draws a compact name+HP-bar plate directly above a sprite's position.
+    If `stat_stages` has any non-zero entries, a row of small chips is added
+    below the HP bar showing each affected stat's current multiplier —
+    green and >1x for a boost (e.g. "ATK 2x"), red and <1x for a drop
+    (e.g. "SPE 0.67x") — so a stat change is visible at a glance instead of
+    only appearing in the turn's text log."""
     bar_h = 10
-    plate_h = 40
+    chip_h = 15
+    active_stages = sorted((k, v) for k, v in (stat_stages or {}).items() if v)
+    plate_h = 40 + (chip_h + 5 if active_stages else 0)
     x = int(center_x - width / 2)
     x = max(6, min(x, CANVAS_W - width - 6))
     y = int(max(4, sprite_top_y - plate_h - 6))
@@ -119,6 +127,24 @@ def _draw_hp_bar_above(draw: "ImageDraw.ImageDraw", center_x: float, sprite_top_
     if fill_w > 0:
         draw.rounded_rectangle([bar_x, bar_y, bar_x + fill_w, bar_y + bar_h],
                                 radius=5, fill=_hp_color(frac))
+
+    if not active_stages:
+        return
+    chip_y = bar_y + bar_h + 5
+    cx = bar_x
+    right_edge = x + width - 6
+    for key, stage in active_stages:
+        mult = _stage_multiplier(stage)
+        label = f"{STAT_DISPLAY.get(key, key.upper())} {mult:g}x"
+        color = (55, 165, 90, 235) if stage > 0 else (205, 65, 65, 235)
+        tb = draw.textbbox((0, 0), label, font=_font(10))
+        chip_w = (tb[2] - tb[0]) + 8
+        if cx + chip_w > right_edge:
+            break  # rare (3+ stats changed at once) — plate just isn't wide enough for more
+        draw.rounded_rectangle([cx, chip_y, cx + chip_w, chip_y + chip_h],
+                                radius=5, fill=color)
+        draw.text((cx + 4, chip_y + 1), label, font=_font(10), fill=(255, 255, 255, 255))
+        cx += chip_w + 3
 
 
 def _draw_background_flair(draw: "ImageDraw.ImageDraw", bg: dict, seed: int):
@@ -168,7 +194,7 @@ async def render_battle_scene(session: aiohttp.ClientSession,
                                player_pokemon: "BattlePokemon",
                                background: Optional[dict] = None) -> Optional[discord.File]:
     """Classic side-on battle scene: opponent upper-right facing player,
-    player's pokemon lower-left (mirrored) facing opponent, with an HP bar
+    player's pokemon lower-left (mi rrored) facing opponent, with an HP bar
     rendered directly above each sprite (name, Lv.100, colour-shifting bar).
     `background` is one of the presets in BACKGROUNDS (a season/time-of-day
     combo); if omitted, one is rolled on the spot."""
@@ -208,12 +234,13 @@ async def render_battle_scene(session: aiohttp.ClientSession,
         player_w = player_sprite.width
 
     _draw_hp_bar_above(draw, opp_pos[0] + opp_w / 2, opp_pos[1],
-                        opponent_pokemon.name, opponent_pokemon.hp, opponent_pokemon.max_hp)
+                        opponent_pokemon.name, opponent_pokemon.hp, opponent_pokemon.max_hp,
+                        stat_stages=opponent_pokemon.stat_stages)
     _draw_hp_bar_above(draw, player_pos[0] + player_w / 2, player_pos[1],
-                        player_pokemon.name, player_pokemon.hp, player_pokemon.max_hp)
+                        player_pokemon.name, player_pokemon.hp, player_pokemon.max_hp,
+                        stat_stages=player_pokemon.stat_stages)
 
     buf = io.BytesIO()
     canvas.convert("RGB").save(buf, format="PNG")
     buf.seek(0)
     return discord.File(buf, filename="battle.png")
-
