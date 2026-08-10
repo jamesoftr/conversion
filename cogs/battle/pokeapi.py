@@ -43,6 +43,15 @@ from .engine import BattlePokemon
 
 # ── PokeAPI fetch + Mongo cache ─────────────────────────────────────────────
 
+# Bumped whenever the shape of a cached move document changes (e.g. adding
+# stat_changes/drain support). A cached doc whose "_schema" doesn't match
+# is treated as a miss and re-fetched — otherwise a move cached under an
+# older schema (missing fields a newer feature relies on, like stat drops
+# or recoil) would silently keep returning incomplete data forever, since
+# get_move_data() would otherwise trust any cache hit unconditionally.
+MOVE_CACHE_SCHEMA = 2
+
+
 async def get_pokemon_data(session: aiohttp.ClientSession, ident: str) -> Optional[dict]:
     key = str(ident).lower().strip().replace(" ", "-")
     doc = await _col().pokedex_cache.find_one({"_id": key})
@@ -83,7 +92,7 @@ async def get_pokemon_data(session: aiohttp.ClientSession, ident: str) -> Option
 async def get_move_data(session: aiohttp.ClientSession, name: str) -> Optional[dict]:
     key = name.lower().strip()
     doc = await _col().move_cache.find_one({"_id": key})
-    if doc:
+    if doc and doc.get("_schema") == MOVE_CACHE_SCHEMA:
         return doc
     try:
         async with session.get(f"{POKEAPI}/move/{key}", timeout=10) as r:
@@ -95,6 +104,7 @@ async def get_move_data(session: aiohttp.ClientSession, name: str) -> Optional[d
 
     doc = {
         "_id": key,
+        "_schema": MOVE_CACHE_SCHEMA,
         "name": data["name"],
         "power": data.get("power"),
         "accuracy": data.get("accuracy"),
@@ -133,7 +143,7 @@ async def get_move_data_bulk(session: aiohttp.ClientSession, names: list) -> dic
         return {}
 
     found = {}
-    async for doc in _col().move_cache.find({"_id": {"$in": keys}}):
+    async for doc in _col().move_cache.find({"_id": {"$in": keys}, "_schema": MOVE_CACHE_SCHEMA}):
         found[doc["_id"]] = doc
 
     missing = [k for k in keys if k not in found]
@@ -179,6 +189,11 @@ async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4)
     five modeled ailments (paralysis/sleep/freeze/burn/poison), the
     highest-accuracy one of those gets a slot too, so status isn't a
     mechanic that only ever shows up as a rare secondary effect.
+
+    Same idea again for pure stat-change status moves (Swords Dance, Nasty
+    Plot, Growl, Leer, ...): if the Pokemon learns one, the one with the
+    largest total stat swing gets a slot, so boosting/dropping stats isn't
+    limited to whatever a damaging move happens to do as a side effect.
     """
     pool = data.get("move_pool", [])
     if not pool:
@@ -196,6 +211,10 @@ async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4)
         if mv.get("damage_class") == "status"
         and mv.get("ailment") in STATUS_INDUCING_AILMENTS
         and not mv.get("ailment_chance")  # only the move's own guaranteed effect, not a % secondary
+    ]
+    stat_status_candidates = [
+        mv for mv in results
+        if mv.get("damage_class") == "status" and mv.get("stat_changes")
     ]
     if not candidates:
         tackle = await get_move_data(session, "tackle")
@@ -242,6 +261,19 @@ async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4)
             best_status = max(remaining_status, key=lambda m: m.get("accuracy") or 0)
             chosen.append(best_status)
             used_types.add(best_status.get("type"))
+
+    # Stat-change guarantee: one status move that boosts the user or drops
+    # the target's stats (Swords Dance, Nasty Plot, Growl, Leer, ...), if
+    # there's still room. Picked by total magnitude of stat change so a
+    # move like Swords Dance (+2) or Nasty Plot (+2) beats a mild +1.
+    if len(chosen) < count and stat_status_candidates:
+        remaining_stat_status = [m for m in stat_status_candidates if m not in chosen]
+        if remaining_stat_status:
+            def _stat_change_score(m):
+                return sum(abs(sc.get("change", 0)) for sc in m.get("stat_changes", []))
+            best_stat_status = max(remaining_stat_status, key=_stat_change_score)
+            chosen.append(best_stat_status)
+            used_types.add(best_stat_status.get("type"))
 
     # Pass 1: strongest move of each not-yet-used type, for coverage.
     for mv in candidates:
@@ -339,7 +371,7 @@ async def build_random_pokemon(session: aiohttp.ClientSession,
 
         # Nothing cached matches yet — roll random dex ids and check each
         # one's BST, caching every fetch as we go (get_pokemon_data does
-        # this automatically) so future rolls find matches instantly via
+        # this automatically) so future rolls find matches i nstantly via
         # the aggregation above.
         last_valid = None
         for _ in range(BST_MAX_ROLL_ATTEMPTS):
@@ -382,4 +414,3 @@ async def build_team(session: aiohttp.ClientSession, count: int,
     return list(await asyncio.gather(
         *[build_random_pokemon(session, min_total, max_total) for _ in range(count)]
     ))
-
