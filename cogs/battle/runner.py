@@ -430,4 +430,140 @@ class Battle:
                 # Sleep/freeze/paralysis can prevent the move outright.
                 can_move, status_line = _status_precheck(attacker.active)
                 if status_line:
- 
+                    lines.append(status_line)
+                if not can_move:
+                    continue
+
+                move_name = move["name"]
+                if move_name != "struggle" and "current_pp" in move:
+                    move["current_pp"] = max(0, move["current_pp"] - 1)
+                lines.extend(self._execute_move(attacker, defender, move))
+
+                if attacker.active.fainted and move_name not in SELF_KO_MOVES:
+                    # Fainted from its own recoil.
+                    lines.append(f"💥 {attacker.active.name.title()} fainted from recoil!")
+                if attacker.active.fainted and attacker.alive_team:
+                    # Don't prompt for a replacement yet — that happens at
+                    # the top of the next iteration, after the damage
+                    # recap embed has been shown.
+                    pending_switches.append(attacker)
+
+                if defender.active.fainted:
+                    lines.append(f"💥 {defender.active.name.title()} fainted!")
+                    if defender.alive_team:
+                        pending_switches.append(defender)
+
+                # One-shot recovery berries can trigger off any HP loss
+                # this move caused — the attacker's own recoil or the
+                # defender taking damage.
+                lines.extend(self._check_berry(attacker.active))
+                lines.extend(self._check_berry(defender.active))
+
+            # 3) End-of-turn residual status damage (burn/poison chip
+            #    damage). Skipped for a Pokemon that already fainted this
+            #    turn — matches the mainline games, no double-dipping.
+            for trainer in (self.t1, self.t2):
+                mon = trainer.active
+                if mon.fainted:
+                    continue
+                if mon.status == "burn":
+                    dmg = max(1, mon.max_hp // 16)
+                    mon.hp = max(0, mon.hp - dmg)
+                    lines.append(f"🔥 {mon.name.title()} is hurt by its burn! (**{dmg}** dmg)")
+                elif mon.status == "poison":
+                    dmg = max(1, mon.max_hp // 8)
+                    mon.hp = max(0, mon.hp - dmg)
+                    lines.append(f"☠️ {mon.name.title()} is hurt by poison! (**{dmg}** dmg)")
+                if mon.fainted:
+                    lines.append(f"💥 {mon.name.title()} fainted!")
+                    if trainer.alive_team:
+                        pending_switches.append(trainer)
+                    continue
+                # Leftovers heal / recovery-berry re-check for end-of-turn
+                # status chip damage.
+                lines.extend(self._apply_item_end_of_turn(mon))
+
+            last_summary = "\n".join(lines) if lines else "No actions were taken."
+            turn += 1
+
+        if self.forfeited_trainer is not None:
+            loser = self.forfeited_trainer
+            winner = self.t2 if loser is self.t1 else self.t1
+        else:
+            # Battle's over the normal way — if the winner's own active
+            # happened to faint on this final turn too (a mutual KO),
+            # silently slot in their next healthy Pokemon so the final
+            # embed doesn't show a fainted mon.
+            for trainer in pending_switches:
+                if trainer.alive_team:
+                    for i, p in enumerate(trainer.team):
+                        if not p.fainted:
+                            trainer.active_idx = i
+                            break
+
+            winner = self.t1 if self.t1.alive_team else self.t2
+            loser = self.t2 if winner is self.t1 else self.t1
+
+        # Show the final turn's damage recap as its own embed first — same
+        # as every other turn's flow — before the "Battle Complete" embed.
+        # (Nothing to show on a forfeit before any turn resolved.)
+        if last_summary and self.forfeited_trainer is None:
+            await self.channel.send(embed=self.build_results_embed(last_summary))
+            await asyncio.sleep(3)
+
+        final_embed, final_file = await self.build_embed(turn, None,
+                                                           final=True, winner=winner)
+        await self._send_embed(final_embed, final_file)
+
+        # Record win/loss for every human trainer in the battle (skip the
+        # bot's own side — `!pf` tracks people, not the bot). vs_ai is True
+        # whenever the opponent was the bot, so a `!battle @<bot>` fight
+        # logs under "Vs AI" and a normal PvP fight logs under "Vs Humans"
+        # for both participants.
+        guild_id = self.channel.guild.id if self.channel.guild else 0
+        vs_ai = self.t1.is_bot or self.t2.is_bot
+        for trainer in (self.t1, self.t2):
+            if trainer.is_bot:
+                continue
+            try:
+                await _db.record_battle_result(guild_id, trainer.user.id, vs_ai, trainer is winner)
+            except Exception:
+                pass  # never let stat logging break the battle's end
+
+        # Elo — humans only. The bot doesn't hold a rating, so a battle
+        # involving it is never scored, win or lose.
+        elo_note = ""
+        if not vs_ai:
+            try:
+                new_w, w_delta, new_l, l_delta = await apply_elo_result(
+                    guild_id, winner.user.id, loser.user.id
+                )
+                elo_note = (
+                    f" ({winner.user.display_name} {'+' if w_delta >= 0 else ''}{w_delta} → **{new_w}**, "
+                    f"{loser.user.display_name} {l_delta} → **{new_l}**)"
+                )
+            except Exception:
+                pass  # never let rating logging break the battle's end
+
+        await self.channel.send(
+            f"🏆 {winner.user.mention} wins the battle! GG {loser.user.display_name}.{elo_note}"
+        )
+
+        self.cog.active_battles.pop(self.channel.id, None)
+
+        # Offer a quick rematch — same matchup, format, team size, and BST
+        # filter as this battle. Only the two trainers involved can use it.
+        if self.vs_bot:
+            human = self.t2.user if self.t1.is_bot else self.t1.user
+            rematch_view = RematchView(
+                self.cog, self.channel, human, self.cog.bot.user,
+                self.fmt, self.count, self.bst_filter, self.vs_bot,
+            )
+        else:
+            rematch_view = RematchView(
+                self.cog, self.channel, self.t1.user, self.t2.user,
+                self.fmt, self.count, self.bst_filter, self.vs_bot,
+            )
+        rematch_view.message = await self.channel.send(
+            "Want to go again?", view=rematch_view
+        )
