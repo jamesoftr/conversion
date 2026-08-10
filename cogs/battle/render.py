@@ -12,7 +12,10 @@ from typing import Optional, TYPE_CHECKING
 import aiohttp
 import discord
 
-from .constants import PIL_OK, LEVEL, CANVAS_W, CANVAS_H, SPRITE_SCALE, STAT_DISPLAY, _stage_multiplier
+from .constants import (
+    PIL_OK, LEVEL, CANVAS_W, CANVAS_H, SPRITE_SCALE, STAT_DISPLAY,
+    STATUS_ABBR, STATUS_BADGE_COLOR, _stage_multiplier,
+)
 
 if PIL_OK:
     from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -99,13 +102,16 @@ async def _fetch_sprite(session: aiohttp.ClientSession, url: str):
 
 def _draw_hp_bar_above(draw: "ImageDraw.ImageDraw", center_x: float, sprite_top_y: float,
                         name: str, hp: int, max_hp: int, stat_stages: Optional[dict] = None,
-                        width: int = 190):
+                        status: Optional[str] = None, width: int = 190):
     """Draws a compact name+HP-bar plate directly above a sprite's position.
     If `stat_stages` has any non-zero entries, a row of small chips is added
     below the HP bar showing each affected stat's current multiplier —
     green and >1x for a boost (e.g. "ATK 2x"), red and <1x for a drop
     (e.g. "SPE 0.67x") — so a stat change is visible at a glance instead of
-    only appearing in the turn's text log."""
+    only appearing in the turn's text log. If `status` is a major status
+    ailment (burn/paralysis/poison/sleep/freeze), a small coloured badge
+    (BRN/PAR/PSN/SLP/FRZ — same convention as the mainline games' status
+    icons) is drawn in the plate's top-right corner."""
     bar_h = 10
     chip_h = 15
     active_stages = sorted((k, v) for k, v in (stat_stages or {}).items() if v)
@@ -118,6 +124,17 @@ def _draw_hp_bar_above(draw: "ImageDraw.ImageDraw", center_x: float, sprite_top_
                             fill=(255, 255, 255, 235), outline=(40, 40, 40, 255), width=2)
     draw.text((x + 10, y + 4), f"{name.title()}  Lv.{LEVEL}",
                font=_font(14), fill=(20, 20, 20, 255))
+
+    if status:
+        abbr = STATUS_ABBR.get(status, status[:3].upper())
+        color = STATUS_BADGE_COLOR.get(status, (110, 110, 110, 235))
+        badge_h = 16
+        tb = draw.textbbox((0, 0), abbr, font=_font(11))
+        badge_w = (tb[2] - tb[0]) + 10
+        bx = x + width - 8 - badge_w
+        by = y + 4
+        draw.rounded_rectangle([bx, by, bx + badge_w, by + badge_h], radius=5, fill=color)
+        draw.text((bx + 5, by + 2), abbr, font=_font(11), fill=(255, 255, 255, 255))
 
     bar_x, bar_y, bar_w = x + 10, y + 22, width - 20
     draw.rounded_rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h],
@@ -235,10 +252,10 @@ async def render_battle_scene(session: aiohttp.ClientSession,
 
     _draw_hp_bar_above(draw, opp_pos[0] + opp_w / 2, opp_pos[1],
                         opponent_pokemon.name, opponent_pokemon.hp, opponent_pokemon.max_hp,
-                        stat_stages=opponent_pokemon.stat_stages)
+                        stat_stages=opponent_pokemon.stat_stages, status=opponent_pokemon.status)
     _draw_hp_bar_above(draw, player_pos[0] + player_w / 2, player_pos[1],
                         player_pokemon.name, player_pokemon.hp, player_pokemon.max_hp,
-                        stat_stages=player_pokemon.stat_stages)
+                        stat_stages=player_pokemon.stat_stages, status=player_pokemon.status)
 
     buf = io.BytesIO()
     canvas.convert("RGB").save(buf, format="PNG")
