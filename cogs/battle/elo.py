@@ -3,7 +3,7 @@ cogs/battle/elo.py
 ────────────────────
 Elo rating system for PvP battles, stored in its own `battle_elo`
 collection, keyed by "<guild_id>:<user_id>", independent of the
-win/loss stats in db.py.
+win/loss stats in db .py.
 """
 
 from .constants import _col
