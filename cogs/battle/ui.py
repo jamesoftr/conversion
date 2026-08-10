@@ -242,6 +242,11 @@ class SwitchButton(discord.ui.Button):
         if trainer is None:
             await interaction.response.send_message("You're not part of this battle.", ephemeral=True)
             return
+        if trainer.active.must_recharge:
+            await interaction.response.send_message(
+                f"{trainer.active.name.title()} must recharge and can't switch out this turn!",
+                ephemeral=True)
+            return
         if trainer.user.id in self.panel.actions:
             await interaction.response.send_message(
                 "You've already locked in your action this turn.", ephemeral=True)
@@ -304,12 +309,19 @@ class BattlePanel(discord.ui.View):
         row = 0
         if t1.is_bot:
             self.actions[t1.user.id] = bot_choose_action(t1, t2)
+        elif t1.active.must_recharge:
+            # Recharge moves (Hyper Beam, Giga Impact, ...) cost the next
+            # turn outright — no move, no switching — so the action is
+            # locked in immediately instead of giving them a dropdown.
+            self.actions[t1.user.id] = ("recharge", None)
         else:
             self.move_select_t1 = MoveSelect(t1, self, row=row)
             self.add_item(self.move_select_t1)
             row += 1
         if t2.is_bot:
             self.actions[t2.user.id] = bot_choose_action(t2, t1)
+        elif t2.active.must_recharge:
+            self.actions[t2.user.id] = ("recharge", None)
         else:
             self.move_select_t2 = MoveSelect(t2, self, row=row)
             self.add_item(self.move_select_t2)
@@ -346,7 +358,7 @@ class BattlePanel(discord.ui.View):
 
         if via_separate_message:
             # This action came from the private ephemeral switch menu, not
-            # from a component on the panel message itself — edit the panel
+            # from a component on the panel messa ge itself — edit the panel
             # message directly instead of trying to ack this interaction.
             if self.message is not None:
                 try:
@@ -385,4 +397,3 @@ class BattlePanel(discord.ui.View):
                 pass
         if not self.event.is_set():
             self.event.set()
-      
