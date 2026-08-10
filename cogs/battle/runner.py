@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 from .constants import (
     LEVEL, AFK_FORFEIT_STRIKES, FALLBACK_MOVE,
     ABILITY_IMMUNITY, ABILITY_ABSORB_HEAL, SELF_KO_MOVES,
-    STRUGGLE_RECOIL_FRACTION, item_label,
+    STRUGGLE_RECOIL_FRACTION, RECHARGE_MOVES, item_label,
 )
 from .engine import (
     BattlePokemon, calc_damage, _apply_secondary_effects, _apply_status_ailment,
@@ -133,6 +133,12 @@ class Battle:
         move_name = move["name"].replace("-", " ").title()
         atk_mon, def_mon = attacker.active, defender.active
 
+        # Recharge moves (Hyper Beam, Giga Impact, ...) cost the user their
+        # next turn — no move, no switching — whether or not this use
+        # actually hits, so the flag is set unconditionally up front.
+        if move["name"] in RECHARGE_MOVES:
+            atk_mon.must_recharge = True
+
         acc = move.get("accuracy")
         if acc is not None and random.uniform(0, 100) > acc:
             return [f"❌ {atk_mon.name.title()}'s {move_name} missed!"]
@@ -155,6 +161,7 @@ class Battle:
 
         lines = []
         dmg = 0
+        actual_dealt = 0  # real HP lost by the target, post-clamp — used for recoil/drain/Shell Bell
         if is_damaging:
             dmg, eff, crit = calc_damage(atk_mon, def_mon, move)
             sturdy_save = (def_mon.ability == "sturdy" and def_mon.hp == def_mon.max_hp
@@ -165,7 +172,7 @@ class Battle:
             def_mon.hp = max(0, def_mon.hp - dmg)
             actual_dealt = prev_def_hp - def_mon.hp
 
-            text = f"➡️ {atk_mon.name.title()} used **{move_name}**! (**{dmg}** dmg)"
+            text = f"➡️ {atk_mon.name.title()} used **{move_name}**! (**{actual_dealt}** dmg)"
             if crit:
                 text += " 💫 Critical hit!"
             if eff > 1:
@@ -198,7 +205,7 @@ class Battle:
             atk_mon.hp = max(0, atk_mon.hp - recoil)
             lines.append(f"💥 {atk_mon.name.title()} is damaged by recoil!")
         else:
-            recoil_msg = _apply_drain_recoil(atk_mon, dmg, move)
+            recoil_msg = _apply_drain_recoil(atk_mon, actual_dealt, move)
             if recoil_msg:
                 lines.append(recoil_msg)
 
@@ -372,6 +379,9 @@ class Battle:
                     lines.extend(self._apply_switch_in_abilities(trainer, opponent))
                 elif action and action[0] == "pass":
                     lines.append(f"⏭️ {trainer.user.display_name} passed the turn.")
+                elif action and action[0] == "recharge":
+                    trainer.active.must_recharge = False
+                    lines.append(f"💤 {trainer.active.name.title()} must recharge and can't act!")
 
             # 2) Moves resolve in priority/speed order. Only trainers whose
             #    locked-in action was "move" attack this turn.
