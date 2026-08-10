@@ -35,8 +35,8 @@ from typing import Optional
 import aiohttp
 
 from .constants import (
-    POKEAPI, FALLBACK_MOVE, PRIORITY_MOVE_MIN_POWER, STAB_MOVE_MIN_POWER,
-    STATUS_INDUCING_AILMENTS, _col,
+    POKEAPI, FALLBACK_MOVE, STATUS_INDUCING_AILMENTS, STAT_KEY_MAP,
+    SELF_STAT_LOWERING_MOVES, _col,
 )
 from .engine import BattlePokemon
 
@@ -49,7 +49,8 @@ from .engine import BattlePokemon
 # older schema (missing fields a newer feature relies on, like stat drops
 # or recoil) would silently keep returning incomplete data forever, since
 # get_move_data() would otherwise trust any cache hit unconditionally.
-MOVE_CACHE_SCHEMA = 2
+# Bumped to 3 for flinch_chance (Fake Out / Air Slash / ...).
+MOVE_CACHE_SCHEMA = 3
 
 
 async def get_pokemon_data(session: aiohttp.ClientSession, ident: str) -> Optional[dict]:
@@ -128,6 +129,10 @@ async def get_move_data(session: aiohttp.ClientSession, name: str) -> Optional[d
         # (e.g. Thunderbolt's 10% paralyze).
         "ailment": ((data.get("meta") or {}).get("ailment") or {}).get("name"),
         "ailment_chance": (data.get("meta") or {}).get("ailment_chance", 0),
+        # Flinch chance (0-100) — Fake Out reports 100 here, Air Slash 30,
+        # most moves 0. Fake Out's "only works turn 1" restriction isn't
+        # PokeAPI data and is special-cased by name (see FAKE_OUT_MOVE).
+        "flinch_chance": (data.get("meta") or {}).get("flinch_chance", 0),
     }
     await _col().move_cache.update_one({"_id": key}, {"$set": doc}, upsert=True)
     return doc
@@ -159,41 +164,45 @@ async def get_move_data_bulk(session: aiohttp.ClientSession, names: list) -> dic
     return found
 
 
+def _lowers_opponent_stat(move: dict) -> bool:
+    """True if this move's stat_changes drop one of the TARGET's stats
+    (not the user's own — see SELF_STAT_LOWERING_MOVES for why the
+    top-level `target` field alone can't be trusted for damage moves)."""
+    if not move.get("stat_changes"):
+        return False
+    if move.get("target") == "user" or move.get("name") in SELF_STAT_LOWERING_MOVES:
+        return False
+    return any(sc.get("change", 0) < 0 for sc in move.get("stat_changes", []))
+
+
+def _lowers_opponent_speed(move: dict) -> bool:
+    if not _lowers_opponent_stat(move):
+        return False
+    return any(STAT_KEY_MAP.get(sc.get("stat")) == "spe" and sc.get("change", 0) < 0
+               for sc in move.get("stat_changes", []))
+
+
 async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4) -> list:
-    """Return `count` damage-dealing moves for this Pokemon (status moves
-    excluded), deterministically — never a random sample.
+    """Build this Pokemon's `count`-move set from an ordered wishlist,
+    filling as many as fit:
 
-    Selection favors *type coverage* over pure power: at most one move per
-    elemental type is picked while a still-unused type has a candidate
-    available, so a Pokemon's moveset isn't four same-type moves when it
-    knows better than that. Only once every learnable type has already
-    been used does it fall back to a second (or third...) move of a type
-    already picked — so a genuinely mono-type-movepool Pokemon still ends
-    up with a full set instead of empty slots.
+    1. Priority — its single best (highest-power) priority move, any type,
+       if it learns one (Quick Attack, Aqua Jet, Sucker Punch, ...).
+    2. STAB — its best move of each of its own types: 1 slot for a
+       mono-type Pokemon, 2 for a dual-type one.
+    3. Status — a 50/50 coin flip; if it hits, its best status move (a
+       reliable ailment-inducer like Thunder Wave/Toxic/Spore if it learns
+       one, else its best pure stat-changer like Swords Dance/Growl).
+    4. Coverage/debuff — one more move: preferably one that lowers the
+       *opponent's* Speed (Icy Wind, Rock Tomb, ...), failing that any
+       move that lowers one of the opponent's other stats (Acid, Mud
+       Bomb, ...), and only failing that a plain off-type coverage move.
 
-    On top of that, if the Pokemon can learn a decent-power priority move
-    (priority > 0, power >= PRIORITY_MOVE_MIN_POWER — e.g. Quick Attack,
-    Aqua Jet, Mach Punch, Extreme Speed, Sucker Punch), the single best one
-    of those is guaranteed a slot even if it wouldn't otherwise crack the
-    top picks by power/coverage alone. It also counts toward the
-    type-coverage pass, so it won't get displaced by a same-type duplicate.
-
-    Same idea for STAB: for each of the Pokemon's own types, if it can
-    learn a move of that type with power > STAB_MOVE_MIN_POWER, the
-    strongest such move is guaranteed a slot (e.g. a Water/Psychic Pokemon
-    gets its best >70-power Water move and best >70-power Psychic move
-    locked in, ahead of coverage moves of types it isn't even STAB on).
-
-    One more guarantee: if the Pokemon can learn a reliable status move
-    (Thunder Wave, Toxic, Will-O-Wisp, Spore, ...) that inflicts one of the
-    five modeled ailments (paralysis/sleep/freeze/burn/poison), the
-    highest-accuracy one of those gets a slot too, so status isn't a
-    mechanic that only ever shows up as a rare secondary effect.
-
-    Same idea again for pure stat-change status moves (Swords Dance, Nasty
-    Plot, Growl, Leer, ...): if the Pokemon learns one, the one with the
-    largest total stat swing gets a slot, so boosting/dropping stats isn't
-    limited to whatever a damaging move happens to do as a side effect.
+    That's already 4 items for a dual-type Pokemon whose status coin flip
+    hits (priority + 2 STAB + status), so the coverage/debuff slot simply
+    doesn't fit that turn — same idea in reverse for a mono-type Pokemon
+    with no priority move, which needs the leftover slots backfilled with
+    its next-strongest remaining moves so the set is never short.
     """
     pool = data.get("move_pool", [])
     if not pool:
@@ -202,11 +211,11 @@ async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4)
 
     move_map = await get_move_data_bulk(session, pool)
     results = list(move_map.values())
-    candidates = [
+    damage_candidates = [
         mv for mv in results
         if mv.get("power") and mv.get("damage_class") != "status"
     ]
-    status_candidates = [
+    ailment_status_candidates = [
         mv for mv in results
         if mv.get("damage_class") == "status"
         and mv.get("ailment") in STATUS_INDUCING_AILMENTS
@@ -216,86 +225,70 @@ async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4)
         mv for mv in results
         if mv.get("damage_class") == "status" and mv.get("stat_changes")
     ]
-    if not candidates:
+    if not damage_candidates:
         tackle = await get_move_data(session, "tackle")
         return [tackle] if tackle else [FALLBACK_MOVE]
 
-    candidates.sort(key=lambda m: m.get("power") or 0, reverse=True)
+    own_types = (data.get("types") or [])[:2]
+    chosen: list = []
 
-    chosen = []
-    used_types = set()
+    def _add(mv) -> bool:
+        if mv is not None and mv not in chosen and len(chosen) < count:
+            chosen.append(mv)
+            return True
+        return False
 
-    priority_candidates = [
-        m for m in candidates
-        if m.get("priority", 0) > 0 and (m.get("power") or 0) >= PRIORITY_MOVE_MIN_POWER
-    ]
-    if priority_candidates:
-        best_priority = max(priority_candidates, key=lambda m: m.get("power") or 0)
-        chosen.append(best_priority)
-        used_types.add(best_priority.get("type"))
+    # 1) Priority — best power among any priority > 0 moves it learns.
+    priority_pool = [m for m in damage_candidates if m.get("priority", 0) > 0]
+    if priority_pool:
+        _add(max(priority_pool, key=lambda m: m.get("power") or 0))
 
-    # STAB guarantee: for each of the Pokemon's own types, lock in its
-    # strongest move of that type if it's above the power threshold —
-    # ahead of the general coverage pass, so a Water/Psychic Pokemon's
-    # best Water and Psychic moves aren't crowded out by, say, a
-    # higher-power but off-type coverage move.
-    for ptype in data.get("types", []):
-        if len(chosen) >= count:
-            break
-        stab_candidates = [
-            m for m in candidates
-            if m.get("type") == ptype and (m.get("power") or 0) > STAB_MOVE_MIN_POWER
-            and m not in chosen
-        ]
-        if not stab_candidates:
-            continue
-        best_stab = max(stab_candidates, key=lambda m: m.get("power") or 0)
-        chosen.append(best_stab)
-        used_types.add(ptype)
+    # 2) STAB — best move of each own type (1 slot if mono-type, 2 if
+    #    dual-type), skipping a type already covered by the priority pick.
+    for t in own_types:
+        stab_pool = [m for m in damage_candidates if m.get("type") == t and m not in chosen]
+        if stab_pool:
+            _add(max(stab_pool, key=lambda m: m.get("power") or 0))
 
-    # Status guarantee: one reliable status-inducing move, if there's
-    # still room and the Pokemon actually learns one.
-    if len(chosen) < count and status_candidates:
-        remaining_status = [m for m in status_candidates if m not in chosen]
-        if remaining_status:
-            best_status = max(remaining_status, key=lambda m: m.get("accuracy") or 0)
-            chosen.append(best_status)
-            used_types.add(best_status.get("type"))
+    # 3) Status — 50/50 chance to add its single best status move.
+    if len(chosen) < count and random.random() < 0.5:
+        best_status = None
+        if ailment_status_candidates:
+            best_status = max(ailment_status_candidates, key=lambda m: m.get("accuracy") or 0)
+        elif stat_status_candidates:
+            best_status = max(
+                stat_status_candidates,
+                key=lambda m: sum(abs(sc.get("change", 0)) for sc in m.get("stat_changes", [])),
+            )
+        _add(best_status)
 
-    # Stat-change guarantee: one status move that boosts the user or drops
-    # the target's stats (Swords Dance, Nasty Plot, Growl, Leer, ...), if
-    # there's still room. Picked by total magnitude of stat change so a
-    # move like Swords Dance (+2) or Nasty Plot (+2) beats a mild +1.
-    if len(chosen) < count and stat_status_candidates:
-        remaining_stat_status = [m for m in stat_status_candidates if m not in chosen]
-        if remaining_stat_status:
-            def _stat_change_score(m):
-                return sum(abs(sc.get("change", 0)) for sc in m.get("stat_changes", []))
-            best_stat_status = max(remaining_stat_status, key=_stat_change_score)
-            chosen.append(best_stat_status)
-            used_types.add(best_stat_status.get("type"))
+    # 4) Coverage/debuff — prefer a move that lowers the opponent's Speed,
+    #    then any move that lowers one of the opponent's other stats,
+    #    then fall back to a plain off-type coverage move.
+    if len(chosen) < count:
+        remaining_damage = [m for m in damage_candidates if m not in chosen]
+        speed_debuffs = [m for m in remaining_damage if _lowers_opponent_speed(m)]
+        other_debuffs = [m for m in remaining_damage if _lowers_opponent_stat(m)]
+        off_type = [m for m in remaining_damage if m.get("type") not in own_types]
+        if speed_debuffs:
+            _add(max(speed_debuffs, key=lambda m: m.get("power") or 0))
+        elif other_debuffs:
+            _add(max(other_debuffs, key=lambda m: m.get("power") or 0))
+        elif off_type:
+            _add(max(off_type, key=lambda m: m.get("power") or 0))
 
-    # Pass 1: strongest move of each not-yet-used type, for coverage.
-    for mv in candidates:
-        if len(chosen) >= count:
-            break
-        if mv in chosen:
-            continue
-        mtype = mv.get("type")
-        if mtype in used_types:
-            continue
-        chosen.append(mv)
-        used_types.add(mtype)
+    # 5) Backfill — anything still open (e.g. no priority move, mono-type
+    #    with the status flip missing) gets the next-strongest remaining
+    #    damage moves so the set is never short of `count`.
+    if len(chosen) < count:
+        remaining = [m for m in damage_candidates if m not in chosen]
+        remaining.sort(key=lambda m: m.get("power") or 0, reverse=True)
+        for mv in remaining:
+            if len(chosen) >= count:
+                break
+            chosen.append(mv)
 
-    # Pass 2: ran out of distinct types before filling every slot — top up
-    # with the next-strongest remaining moves regardless of type.
-    for mv in candidates:
-        if len(chosen) >= count:
-            break
-        if mv in chosen:
-            continue
-        chosen.append(mv)
-
+    random.shuffle(chosen)  # don't always surface the wishlist picks in the same order
     return chosen[:count]
 
 
