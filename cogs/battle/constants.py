@@ -74,6 +74,7 @@ FALLBACK_MOVE = {
     "type": "normal", "damage_class": "physical", "priority": 0,
     "effect_chance": None, "stat_changes": [], "drain": 0,
     "target": "selected-pokemon", "ailment": None, "ailment_chance": 0,
+    "flinch_chance": 0,
 }
 STRUGGLE_RECOIL_FRACTION = 0.25  # Struggle's recoil is 1/4 of the USER's max HP, not damage-based
 
@@ -132,11 +133,34 @@ STAT_DISPLAY = {"atk": "Attack", "dfn": "Defense", "spa": "Sp. Atk",
 SELF_KO_MOVES = {"explosion", "self-destruct"}
 
 # Moves that force the user to spend the following turn recharging — no
-# move, no switching — regardless of whether the move hit or missed.
+# move, no switching — but only if the move actually connected. A miss
+# (or a target that was fully immune) means nothing happened, so there's
+# nothing to recharge from.
 RECHARGE_MOVES = {
     "hyper-beam", "giga-impact", "hydro-cannon", "frenzy-plant",
     "blast-burn", "rock-wrecker", "roar-of-time", "prismatic-laser",
     "meteor-assault", "eternabeam",
+}
+
+# ── Flinching ────────────────────────────────────────────────────────────────
+# Fake Out is a damaging move whose 100% flinch chance PokeAPI reports like
+# any other secondary effect — but it uniquely only works the turn a
+# Pokemon is freshly sent out; every other use just fails outright. That
+# restriction isn't data PokeAPI exposes, so it's special-cased by name.
+FAKE_OUT_MOVE = "fake-out"
+
+# PokeAPI's `stat_changes` list never says whether a damaging move's
+# secondary stat drop hits the target (e.g. Acid -> foe's Sp. Def) or the
+# user (e.g. Leaf Storm -> the user's own Sp. Atk) — the move's own
+# top-level `target` field describes who takes the *damage*, not who eats
+# the stat change, so it can't disambiguate this either. These are the
+# common damage+recoil-stat-drop moves whose secondary effect actually
+# targets the user; anything not listed here falls back to the normal
+# target-field-based logic, which is correct for the vast majority of
+# stat-changing moves (Acid, Mud Bomb, Bug Buzz, Growl, Leer, ...).
+SELF_STAT_LOWERING_MOVES = {
+    "leaf-storm", "overheat", "draco-meteor", "psycho-boost",
+    "superpower", "close-combat", "v-create", "fleur-cannon",
 }
 
 def _stage_multiplier(stage: int) -> float:
@@ -156,6 +180,17 @@ STATUS_VERB = {
     "sleep": "fell asleep", "freeze": "was frozen solid",
 }
 STATUS_EMOJI = {"burn": "🔥", "paralysis": "⚡", "poison": "☠️", "sleep": "😴", "freeze": "🧊"}
+# Short in-game-style badge text + colour for the status icon drawn over a
+# Pokemon's sprite in battle images (emoji don't reliably render as glyphs
+# through Pillow/DejaVuSans, so these use classic 3-letter abbreviations
+# instead, same as the mainline games' status icons).
+STATUS_ABBR = {"burn": "BRN", "paralysis": "PAR", "poison": "PSN",
+               "sleep": "SLP", "freeze": "FRZ"}
+STATUS_BADGE_COLOR = {
+    "burn": (230, 90, 40, 235), "paralysis": (240, 200, 40, 235),
+    "poison": (155, 80, 190, 235), "sleep": (140, 140, 140, 235),
+    "freeze": (120, 200, 235, 235),
+}
 # Type-based immunities to specific status conditions (a small, cheap-to-add
 # nicety that matches the mainline games and stops e.g. Electric-types ever
 # getting paralyzed by a Body Slam).
