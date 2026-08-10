@@ -17,11 +17,11 @@ if TYPE_CHECKING:
 from .constants import (
     LEVEL, AFK_FORFEIT_STRIKES, FALLBACK_MOVE,
     ABILITY_IMMUNITY, ABILITY_ABSORB_HEAL, SELF_KO_MOVES,
-    STRUGGLE_RECOIL_FRACTION, RECHARGE_MOVES, item_label,
+    STRUGGLE_RECOIL_FRACTION, RECHARGE_MOVES, FAKE_OUT_MOVE, item_label,
 )
 from .engine import (
     BattlePokemon, calc_damage, _apply_secondary_effects, _apply_status_ailment,
-    _status_precheck, _apply_drain_recoil,
+    _status_precheck, _apply_drain_recoil, _apply_flinch,
 )
 from .render import pick_background, render_battle_scene
 from .trainer_ai import Trainer
@@ -112,12 +112,21 @@ class Battle:
     def build_results_embed(self, last_summary: str) -> discord.Embed:
         """Plain text-only embed recapping the previous turn's damage,
         switches, etc. — sent on its own between the scene reveal and the
-        next action panel."""
-        return discord.Embed(
-            title="📋 Last Turn's Results",
-            description=last_summary[:4096],
+        next action panel.
+
+        Each event gets its own line with a blank line between them (the
+        raw summary packs everything edge-to-edge, which reads as a wall
+        of text on a tight embed), plus a bit of extra breathing room
+        around the title so it's easy to scan turn to turn."""
+        entries = [line for line in last_summary.split("\n") if line.strip()]
+        spaced = "\n\n".join(f"{line}" for line in entries)
+        embed = discord.Embed(
+            title="📋 Turn Recap",
+            description=spaced[:4096] or "No actions were taken.",
             colour=0x95A5A6,
         )
+        embed.set_footer(text="⏳ Next turn is coming up shortly...")
+        return embed
 
     async def _send_embed(self, embed: discord.Embed, file: Optional[discord.File], **kwargs):
         if file is not None:
@@ -133,11 +142,10 @@ class Battle:
         move_name = move["name"].replace("-", " ").title()
         atk_mon, def_mon = attacker.active, defender.active
 
-        # Recharge moves (Hyper Beam, Giga Impact, ...) cost the user their
-        # next turn — no move, no switching — whether or not this use
-        # actually hits, so the flag is set unconditionally up front.
-        if move["name"] in RECHARGE_MOVES:
-            atk_mon.must_recharge = True
+        # Fake Out only works the turn a Pokemon is freshly sent out — any
+        # other use fails outright, before accuracy is even rolled.
+        if move["name"] == FAKE_OUT_MOVE and not atk_mon.first_turn:
+            return [f"❌ {atk_mon.name.title()}'s {move_name} failed!"]
 
         acc = move.get("accuracy")
         if acc is not None and random.uniform(0, 100) > acc:
@@ -158,6 +166,13 @@ class Battle:
                 if healed > 0:
                     return [f"🛡️ {def_mon.name.title()}'s {ability_label} absorbed the attack and healed **{healed}** HP!"]
             return [f"🛡️ {def_mon.name.title()}'s {ability_label} makes {move_name} have no effect!"]
+
+        # Recharge moves (Hyper Beam, Giga Impact, ...) cost the user their
+        # next turn — no move, no switching — but only once we know the
+        # move actually connected: a miss or a full type-immunity above
+        # both return early, so reaching here means it landed.
+        if move["name"] in RECHARGE_MOVES:
+            atk_mon.must_recharge = True
 
         lines = []
         dmg = 0
@@ -214,6 +229,9 @@ class Battle:
         status_msg = _apply_status_ailment(atk_mon, def_mon, move)
         if status_msg:
             lines.append(status_msg)
+
+        if not def_mon.fainted:
+            _apply_flinch(atk_mon, def_mon, move)
 
         return lines
 
@@ -306,7 +324,14 @@ class Battle:
             #    last turn to send out a replacement.
             for trainer in pending_switches:
                 new_idx = await self.get_forced_switch(trainer)
+                # The fainted mon's stat stages don't matter anymore, but
+                # reset them anyway for consistency in case it's ever
+                # revived/re-checked; the real point is first_turn on the
+                # incoming Pokemon, so a freshly-sent-in Fake Out user
+                # works right after a KO forces a switch too.
+                trainer.active.reset_stat_stages()
                 trainer.active_idx = new_idx
+                trainer.active.first_turn = True
                 other = self.t2 if trainer is self.t1 else self.t1
                 switch_in_lines = self._apply_switch_in_abilities(trainer, other)
                 msg = f"{trainer.user.display_name} sent out **{trainer.active.name.title()}**!"
@@ -371,7 +396,12 @@ class Battle:
                 action = panel.actions.get(trainer.user.id)
                 if action and action[0] == "switch":
                     old_name = trainer.active.name.title()
+                    # Stat stage changes (boosts and drops alike) don't
+                    # follow a Pokemon back to the bench — only status
+                    # ailments (burn/poison/etc.) do that.
+                    trainer.active.reset_stat_stages()
                     trainer.active_idx = action[1]
+                    trainer.active.first_turn = True
                     lines.append(
                         f"🔄 {trainer.user.display_name} withdrew {old_name} and sent out "
                         f"**{trainer.active.name.title()}**!"
@@ -382,6 +412,13 @@ class Battle:
                 elif action and action[0] == "recharge":
                     trainer.active.must_recharge = False
                     lines.append(f"💤 {trainer.active.name.title()} must recharge and can't act!")
+
+            # Flinch only ever lasts the one turn it was inflicted on —
+            # clear any leftover flag before this turn's moves resolve
+            # (a flinched Pokemon that never got to act, e.g. because its
+            # side switched instead, shouldn't carry it into next turn).
+            for t in (self.t1, self.t2):
+                t.active.flinched = False
 
             # 2) Moves resolve in priority/speed order. Only trainers whose
             #    locked-in action was "move" attack this turn.
@@ -437,17 +474,28 @@ class Battle:
                 if attacker.active.fainted or defender.active.fainted:
                     continue
 
+                # A flinch (Fake Out, a lucky Air Slash, ...) prevents the
+                # move outright, one-time-only — a faster mover earlier
+                # this same turn is what set the flag.
+                if attacker.active.flinched:
+                    attacker.active.flinched = False
+                    attacker.active.first_turn = False
+                    lines.append(f"😵 {attacker.active.name.title()} flinched and couldn't move!")
+                    continue
+
                 # Sleep/freeze/paralysis can prevent the move outright.
                 can_move, status_line = _status_precheck(attacker.active)
                 if status_line:
                     lines.append(status_line)
                 if not can_move:
+                    attacker.active.first_turn = False
                     continue
 
                 move_name = move["name"]
                 if move_name != "struggle" and "current_pp" in move:
                     move["current_pp"] = max(0, move["current_pp"] - 1)
                 lines.extend(self._execute_move(attacker, defender, move))
+                acting_pokemon.first_turn = False
 
                 if attacker.active.fainted and move_name not in SELF_KO_MOVES:
                     # Fainted from its own recoil.
