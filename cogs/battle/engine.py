@@ -56,6 +56,9 @@ class BattlePokemon:
         # Battle-only stat boosts/drops (-6..+6 stages), reset per battle —
         # these are what stat-lowering/raising secondary effects modify.
         self.stat_stages = {"atk": 0, "dfn": 0, "spa": 0, "spd": 0, "spe": 0}
+        # Set after using a recharge move (Hyper Beam, Giga Impact, ...);
+        # checked and cleared at the start of this Pokemon's next turn.
+        self.must_recharge = False
         # Major status condition: None, "burn", "paralysis", "poison",
         # "sleep", or "freeze". status_counter is only meaningful for sleep
         # (counts down the number of turns left asleep).
@@ -173,7 +176,7 @@ def _apply_status_ailment(attacker: BattlePokemon, defender: BattlePokemon, move
 
 def _status_precheck(pokemon: BattlePokemon) -> tuple:
     """Called right before a Pokemon would act. Returns (can_move, message).
-    Handles sleep/freeze fully preventing the move (with a chance to wake
+    Handles sleep/freeze fully p reventing the move (with a chance to wake
     up/thaw each turn) and paralysis' chance to flinch-lock the Pokemon in
     place, on top of the passive stat effects handled in effective_stat()."""
     status = pokemon.status
@@ -195,15 +198,17 @@ def _status_precheck(pokemon: BattlePokemon) -> tuple:
     return True, None
 
 
-def _apply_drain_recoil(attacker: BattlePokemon, dmg: int, move: dict) -> Optional[str]:
+def _apply_drain_recoil(attacker: BattlePokemon, dealt: int, move: dict) -> Optional[str]:
     """Applies HP-drain (e.g. Giga Drain, positive %) or recoil (e.g. Flare
-    Blitz/Double-Edge/Brave Bird, negative %) based on the move's `drain`
-    percentage, and returns a flavor-text line, or None if the move has
-    neither."""
+    Blitz/Double-Edge/Brave Bird/Volt Tackle, negative %) based on the
+    move's `drain` percentage, and returns a flavor-text line, or None if
+    the move has neither. `dealt` must be the actual HP lost by the target
+    (post-clamp) — not the raw pre-clamp damage calculation — otherwise a
+    KO hit inflates recoil/drain past what the target actually lost."""
     drain = move.get("drain") or 0
-    if not drain or dmg <= 0:
+    if not drain or dealt <= 0:
         return None
-    amount = max(1, int(abs(dmg) * abs(drain) / 100))
+    amount = max(1, int(abs(dealt) * abs(drain) / 100))
     if drain > 0:
         healed = min(amount, attacker.max_hp - attacker.hp)
         if healed <= 0:
@@ -213,4 +218,3 @@ def _apply_drain_recoil(attacker: BattlePokemon, dmg: int, move: dict) -> Option
     else:
         attacker.hp = max(0, attacker.hp - amount)
         return f"💢 {attacker.name.title()} is hit by recoil! (**{amount}** dmg)"
-      
