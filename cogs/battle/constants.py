@@ -131,6 +131,14 @@ STAT_DISPLAY = {"atk": "Attack", "dfn": "Defense", "spa": "Sp. Atk",
 
 SELF_KO_MOVES = {"explosion", "self-destruct"}
 
+# Moves that force the user to spend the following turn recharging — no
+# move, no switching — regardless of whether the move hit or missed.
+RECHARGE_MOVES = {
+    "hyper-beam", "giga-impact", "hydro-cannon", "frenzy-plant",
+    "blast-burn", "rock-wrecker", "roar-of-time", "prismatic-laser",
+    "meteor-assault", "eternabeam",
+}
+
 def _stage_multiplier(stage: int) -> float:
     stage = max(-6, min(6, stage))
     if stage >= 0:
