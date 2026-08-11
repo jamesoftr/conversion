@@ -36,7 +36,7 @@ import aiohttp
 
 from .constants import (
     POKEAPI, FALLBACK_MOVE, STATUS_INDUCING_AILMENTS, STAT_KEY_MAP,
-    SELF_STAT_LOWERING_MOVES, _col,
+    SELF_STAT_LOWERING_MOVES, _col, type_multiplier,
 )
 from .engine import BattlePokemon
 
@@ -407,3 +407,144 @@ async def build_team(session: aiohttp.ClientSession, count: int,
     return list(await asyncio.gather(
         *[build_random_pokemon(session, min_total, max_total) for _ in range(count)]
     ))
+
+
+# ── AI Gym teams ─────────────────────────────────────────────────────────────
+# Building a gym leader's team is a different problem than a random roll: the
+# gym has a fixed type theme, and its whole point is to be a genuinely tough,
+# tailored matchup for whatever team the challenger just submitted, not a
+# random sample of that type. This picks the type's strongest available
+# counters to the challenger's team, then leans each one's moveset toward
+# hitting that specific team hard instead of just whatever's highest-power.
+
+GYM_TYPE_POOL_ATTEMPTS = 40  # species of the gym's type actually fetched/considered per challenge
+
+
+async def get_pokemon_of_type(session: aiohttp.ClientSession, type_name: str) -> list:
+    """All species names belonging to `type_name`, per PokeAPI's /type
+    endpoint - cached in Mongo (this list barely ever changes) so a gym
+    challenge doesn't re-fetch it every time."""
+    key = f"type:{type_name}"
+    doc = await _col().type_pool_cache.find_one({"_id": key})
+    if doc:
+        return doc.get("pokemon", [])
+    try:
+        async with session.get(f"{POKEAPI}/type/{type_name}", timeout=15) as r:
+            if r.status != 200:
+                return []
+            data = await r.json()
+    except Exception:
+        return []
+    names = [p["pokemon"]["name"] for p in data.get("pokemon", [])]
+    await _col().type_pool_cache.update_one({"_id": key}, {"$set": {"pokemon": names}}, upsert=True)
+    return names
+
+
+def _counter_score(candidate_types: list, candidate_stats: dict, opponent_team: list) -> float:
+    """How well a species (by typing + BST) counters a whole opposing team:
+    for each opposing Pokemon, the candidate's best offensive type
+    multiplier against it, minus the worst multiplier the opponent could
+    hit the candidate back with - summed across the team, with BST folded
+    in as a much smaller tiebreaker so a genuinely tanky/powerful counter
+    is preferred over a frail one with the same typing edge."""
+    total = 0.0
+    for opp in opponent_team:
+        best_hit = max((type_multiplier(t, opp.types) for t in candidate_types), default=1.0)
+        worst_taken = max((type_multiplier(ot, candidate_types) for ot in opp.types), default=1.0)
+        total += best_hit - worst_taken
+    bst = sum(candidate_stats.values()) if candidate_stats else 0
+    return total * 100 + bst / 10
+
+
+async def pick_gym_moves(session: aiohttp.ClientSession, data: dict,
+                          opponent_team: list, count: int = 4) -> list:
+    """Starts from the normal pick_moves() wishlist (priority/STAB/status
+    coverage), then swaps in any learnable move that hits the challenger's
+    specific team harder than what's currently in the weakest slot - so a
+    gym Pokemon's moves are chosen with the actual opposing team in mind,
+    not just raw power. A move only displaces something already picked if
+    it's a meaningfully better answer to that team (super effective against
+    more/tougher members of it), so priority/STAB slots aren't thrown away
+    for a marginal upgrade."""
+    base = await pick_moves(session, data, count=count)
+    if not opponent_team:
+        return base
+
+    opp_types = [t for opp in opponent_team for t in opp.types]
+
+    def coverage_score(move: dict) -> float:
+        mtype = move.get("type", "normal")
+        power = move.get("power") or 0
+        if power <= 0:
+            return 0.0
+        return sum(type_multiplier(mtype, [t]) for t in opp_types) * power
+
+    move_pool_names = data.get("move_pool", [])
+    move_data = await get_move_data_bulk(session, move_pool_names)
+    already_have = {m["name"] for m in base}
+    coverage_candidates = sorted(
+        (m for m in move_data.values() if m and m["name"] not in already_have and (m.get("power") or 0) > 0),
+        key=coverage_score,
+        reverse=True,
+    )
+
+    base_by_weakness = sorted(range(len(base)), key=lambda i: coverage_score(base[i]))
+    for slot_i in base_by_weakness:
+        if not coverage_candidates:
+            break
+        best_candidate = coverage_candidates[0]
+        # Only swap if the coverage move is a clearly stronger answer to
+        # this specific team (1.5x threshold keeps priority/STAB picks
+        # from getting bumped for a barely-better option).
+        if coverage_score(best_candidate) > coverage_score(base[slot_i]) * 1.5 + 1:
+            base[slot_i] = coverage_candidates.pop(0)
+
+    return base
+
+
+async def _best_gym_counters(session: aiohttp.ClientSession, gym_type: str,
+                              opponent_team: list, count: int) -> list:
+    """Shortlists species of `gym_type`, scores each by how well its typing
+    (+ BST as tiebreak) counters the challenger's whole team, and returns
+    the `count` best as raw PokeAPI data dicts."""
+    pool_names = await get_pokemon_of_type(session, gym_type)
+    if not pool_names:
+        pool_names = [gym_type]  # extremely unlikely fallback - keeps a real type from ever coming up empty
+    random.shuffle(pool_names)
+    to_check = pool_names[:GYM_TYPE_POOL_ATTEMPTS]
+
+    fetched = list(await asyncio.gather(
+        *[get_pokemon_data(session, name) for name in to_check], return_exceptions=True
+    ))
+    candidates = [d for d in fetched if isinstance(d, dict) and gym_type in (d.get("types") or [])]
+    if not candidates:
+        # Type pool fetch failed outright - fall back to a few random
+        # dex rolls filtered to the right type rather than erroring out.
+        for _ in range(20):
+            data = await get_pokemon_data(session, str(random.randint(1, 1025)))
+            if data and gym_type in (data.get("types") or []):
+                candidates.append(data)
+            if len(candidates) >= count:
+                break
+
+    candidates.sort(
+        key=lambda d: _counter_score(d.get("types", []), d.get("stats", {}), opponent_team),
+        reverse=True,
+    )
+    chosen = candidates[:count]
+    while len(chosen) < count and candidates:
+        chosen.append(random.choice(candidates))
+    return chosen
+
+
+async def build_gym_team(session: aiohttp.ClientSession, gym_type: str,
+                          opponent_team: list, count: int) -> list:
+    """Builds a full AI gym-leader team: the `count` best `gym_type`
+    counters to `opponent_team` (see _best_gym_counters), each equipped
+    with a moveset biased toward hitting that specific team hard (see
+    pick_gym_moves)."""
+    chosen_data = await _best_gym_counters(session, gym_type, opponent_team, count)
+    teams = await asyncio.gather(
+        *[pick_gym_moves(session, data, opponent_team) for data in chosen_data]
+    )
+    return [BattlePokemon(data, moves) for data, moves in zip(chosen_data, teams)]
