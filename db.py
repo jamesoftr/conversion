@@ -107,6 +107,15 @@ async def ensure_indexes() -> None:
     # Battle cog — win/loss records, one doc per human trainer per battle
     await db.battle_results.create_index([("guild_id", 1), ("user_id", 1)])
 
+    # AI Gym badges — one doc per trainer per badge earned (unique so a
+    # rematch clear of a gym they already beat never double-inserts).
+    await db.gym_badges.create_index(
+        [("guild_id", 1), ("user_id", 1), ("gym_type", 1)], unique=True
+    )
+
+    # Type -> species-list cache for gym-team building.
+    await db.type_pool_cache.create_index([("_id", 1)])
+
 # ── Catches ───────────────────────────────────────────────────────────────────
 
 async def mark_catch_message_seen(message_id: int) -> bool:
@@ -1401,3 +1410,41 @@ async def get_ai_global_stats(guild_id: int) -> dict:
     total = result[0]["total"]
     human_wins = result[0]["human_wins"]
     return {"total": total, "ai_wins": total - human_wins, "ai_losses": human_wins}
+
+
+# ── AI Gym badges ────────────────────────────────────────────────────────────
+
+async def award_gym_badge(guild_id: int, user_id: int, gym_type: str) -> bool:
+    """
+    Records a trainer clearing an AI Gym of `gym_type`. Returns True if this
+    is a NEW badge, False if they already had it (idempotent — a rematch win
+    against a gym you've already cleared doesn't duplicate the badge).
+    """
+    db = get_db()
+    existing = await db.gym_badges.find_one(
+        {"guild_id": guild_id, "user_id": user_id, "gym_type": gym_type}
+    )
+    if existing:
+        return False
+    await db.gym_badges.insert_one({
+        "guild_id":  guild_id,
+        "user_id":   user_id,
+        "gym_type":  gym_type,
+        "timestamp": datetime.now(timezone.utc),
+    })
+    return True
+
+
+async def get_gym_badges(guild_id: int, user_id: int) -> list[str]:
+    """All gym types a trainer has earned a badge for, in the order they
+    were earned."""
+    db = get_db()
+    cursor = db.gym_badges.find(
+        {"guild_id": guild_id, "user_id": user_id}
+    ).sort("timestamp", 1)
+    return [doc["gym_type"] async for doc in cursor]
+
+
+async def get_gym_badge_count(guild_id: int, user_id: int) -> int:
+    db = get_db()
+    return await db.gym_badges.count_documents({"guild_id": guild_id, "user_id": user_id})
