@@ -106,7 +106,19 @@ models:
     holder 1/8 of any damage it deals).
   • The `!battle @<bot>` AI weighs moves by accuracy-discounted expected
     damage (not just raw power) and can voluntarily switch out of a bad
-    matchup, not just when forced by a faint.
+    matchup, not just when forced by a faint. Since it can see the foe's
+    whole moveset, it checks the heaviest hit ANY of their moves could
+    land (not just their obvious STAB pick) before bailing, and only sends
+    in a bench mon that can either survive that hit and threaten a real
+    kill back, or is fast enough to hit first and still do the same —
+    "resists it but can't do anything back" is never good enough on its
+    own. See cogs/battle/trainer_ai.py's bot_choose_action().
+  • AI Gyms (`cogs/gym_cog.py`, `!gym <type>`) — 18 type-themed gym
+    leaders, one per type. The trainer submits their team first (hidden
+    from the AI), then the gym builds a team of that type specifically
+    countering it (typing + BST) with movesets biased toward hitting that
+    team hard, and battles it out with the same AI above. A win awards
+    that gym's badge (`!bpf` shows earned badges).
 
 Battle flow / UI
 -----------------
@@ -160,7 +172,7 @@ import aiohttp
 import discord
 from discord.ext import commands
 
-from .battle.constants import LEVEL
+from .battle.constants import LEVEL, GYM_TYPES, GYM_TYPE_EMOJI, GYM_TOTAL_BADGES
 from .battle.pokeapi import (
     get_pokemon_data, pick_moves, parse_bst_filter, format_bst_filter, build_team,
 )
@@ -440,11 +452,13 @@ class BattleCog(commands.Cog, name="Battle"):
                 title=f"🤖 {self.bot.user.display_name}'s Battle Record (vs. everyone)",
                 colour=0xE67E22,
             )
+            embed.set_thumbnail(url=self.bot.user.display_avatar.url)
+            wr = f" ({stats['ai_wins'] / stats['total']:.0%})" if stats["total"] else ""
             embed.add_field(
                 name="Vs All Trainers",
                 value=(f"Total battles: **{stats['total']}**\n"
                        f"Win: **{stats['ai_wins']}**\n"
-                       f"Loss: **{stats['ai_losses']}**"),
+                       f"Loss: **{stats['ai_losses']}**{wr}"),
                 inline=False,
             )
             await ctx.send(embed=embed)
@@ -460,25 +474,35 @@ class BattleCog(commands.Cog, name="Battle"):
                 return
 
         stats = await _db.get_battle_stats(guild_id, member.id)
+        badges = await _db.get_gym_badges(guild_id, member.id)
+        badge_set = set(badges)
+
+        def _wl(total, wins, losses):
+            wr = f" ({wins / total:.0%})" if total else ""
+            return f"Battles: **{total}**\nW/L: **{wins}**/**{losses}**{wr}"
 
         embed = discord.Embed(
-            title=f"⚔️ {member.display_name}'s Battle Record",
+            title=f"⚔️ {member.display_name}'s Trainer Profile",
             colour=0x3498DB,
         )
+        embed.set_thumbnail(url=member.display_avatar.url)
+        embed.add_field(name="🧑‍🤝‍🧑 Vs Humans", value=_wl(
+            stats["human_total"], stats["human_wins"], stats["human_losses"]
+        ), inline=True)
+        embed.add_field(name="🤖 Vs AI", value=_wl(
+            stats["ai_total"], stats["ai_wins"], stats["ai_losses"]
+        ), inline=True)
+        embed.add_field(name="\u200b", value="\u200b", inline=True)  # spacer to keep the 3rd column empty/aligned
+
+        badge_line = " ".join(
+            GYM_TYPE_EMOJI.get(t, "🏅") for t in GYM_TYPES if t in badge_set
+        ) or "*None yet — try `!gym` to challenge one!*"
         embed.add_field(
-            name="Vs Humans",
-            value=(f"Total battles: **{stats['human_total']}**\n"
-                   f"Win: **{stats['human_wins']}**\n"
-                   f"Loss: **{stats['human_losses']}**"),
-            inline=True,
+            name=f"🏅 Gym Badges ({len(badges)}/{GYM_TOTAL_BADGES})",
+            value=badge_line,
+            inline=False,
         )
-        embed.add_field(
-            name="Vs AI",
-            value=(f"Total battles: **{stats['ai_total']}**\n"
-                   f"Win: **{stats['ai_wins']}**\n"
-                   f"Loss: **{stats['ai_losses']}**"),
-            inline=True,
-        )
+        embed.set_footer(text=f"{member.display_name} • Level {LEVEL} trainer")
         await ctx.send(embed=embed)
 
     @commands.group(name="elo", invoke_without_command=True)
