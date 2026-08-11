@@ -203,3 +203,25 @@ SLEEP_MIN_TURNS, SLEEP_MAX_TURNS = 1, 3
 # ── Battle scene image canvas ───────────────────────────────────────────────
 CANVAS_W, CANVAS_H = 720, 380
 SPRITE_SCALE = 3
+
+# ── AI Gyms ──────────────────────────────────────────────────────────────────
+# One gym (and one badge) per official type - 18 total. Order doubles as the
+# display order everywhere badges are listed (!bpf, !gym list, ...).
+GYM_TYPES = [
+    "normal", "fire", "water", "electric", "grass", "ice", "fighting",
+    "poison", "ground", "flying", "psychic", "bug", "rock", "ghost",
+    "dragon", "dark", "steel", "fairy",
+]
+
+GYM_TYPE_EMOJI = {
+    "normal": "⚪", "fire": "🔥", "water": "💧", "electric": "⚡",
+    "grass": "🌿", "ice": "❄️", "fighting": "🥊", "poison": "☠️",
+    "ground": "🏜️", "flying": "🕊️", "psychic": "🔮", "bug": "🐛",
+    "rock": "🪨", "ghost": "👻", "dragon": "🐉", "dark": "🌑",
+    "steel": "⚙️", "fairy": "✨",
+}
+
+# Flavor name for each gym's badge, shown on `!bpf` and the gym-clear message.
+GYM_BADGE_NAME = {t: f"{t.title()} Badge" for t in GYM_TYPES}
+
+GYM_TOTAL_BADGES = len(GYM_TYPES)
