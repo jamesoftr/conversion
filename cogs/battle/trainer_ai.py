@@ -7,6 +7,7 @@ Trainer/PendingChallenge dataclasses and the `!battle ai` opponent AI
 
 from dataclasses import dataclass, field
 from typing import Optional
+import math
 
 import discord
 
@@ -114,6 +115,55 @@ def _predicted_opponent_move(opponent_active: BattlePokemon, our_target: BattleP
     return best_move
 
 
+def _acts_first(attacker: BattlePokemon, defender: BattlePokemon, move: dict,
+                 defender_move: Optional[dict]) -> bool:
+    """Would `move` go before `defender_move` this turn, using the exact
+    same ordering rule the battle engine applies (see runner.py's turn
+    sort): priority bracket first, then effective Speed, then raw base
+    Speed as the final tie-break. `defender_move` is only a prediction
+    (the AI doesn't get to see the foe's actual choice ahead of time), so
+    this is "would we win the race if they use their most likely move" -
+    the same assumption _worst_case_fraction already makes elsewhere."""
+    atk_prio = move.get("priority", 0)
+    def_prio = (defender_move or {}).get("priority", 0)
+    if atk_prio != def_prio:
+        return atk_prio > def_prio
+    atk_spe = attacker.effective_stat("spe")
+    def_spe = defender.effective_stat("spe")
+    if atk_spe != def_spe:
+        return atk_spe > def_spe
+    return attacker.base_speed >= defender.base_speed
+
+
+def _turns_to_ko(damage_per_hit: float, target_hp: float) -> float:
+    """Rough number of hits needed to whittle target_hp down at
+    damage_per_hit per hit. inf if the move barely chips at all."""
+    if damage_per_hit <= 0:
+        return math.inf
+    return math.ceil(target_hp / damage_per_hit)
+
+
+def _survives_trade(attacker: BattlePokemon, defender: BattlePokemon, atk_move: dict,
+                     def_move: Optional[dict], atk_acts_first: bool) -> bool:
+    """Approximates repeatedly trading atk_move for the foe's predicted
+    def_move: does the attacker land its finishing blow before the
+    defender's hits add up to a KO on the attacker?
+
+    This is the classic "priority wins a mutual near-KO race" case: if
+    both sides need N hits to finish the other and the attacker moves
+    first, it only ever eats N-1 hits (the defender doesn't get to act on
+    the turn it's finished off) - one fewer than it would moving second.
+    A close trade that's a loss without priority can be a win with it."""
+    atk_dmg = _accuracy_weighted_score(attacker, defender, atk_move)
+    turns_to_kill = _turns_to_ko(atk_dmg, defender.hp)
+    if turns_to_kill == math.inf:
+        return False
+    def_dmg = _accuracy_weighted_score(defender, attacker, def_move) if def_move else 0.0
+    turns_opp_needs = _turns_to_ko(def_dmg, attacker.hp)
+    hits_taken = turns_to_kill - 1 if atk_acts_first else turns_to_kill
+    return turns_opp_needs > hits_taken
+
+
 def bot_choose_action(trainer: Trainer, opponent: Trainer) -> tuple:
     """Battle AI for the bot's own trainer.
 
@@ -121,9 +171,26 @@ def bot_choose_action(trainer: Trainer, opponent: Trainer) -> tuple:
     accuracy-weighted expected damage (STAB, type effectiveness, and
     effective stats all factored in via estimate_damage), skips any move
     with no PP left, and attacks with the best one - or Struggles (index
-    -1) if every move is out of PP. If the best move would flat-out KO the
-    foe's current active this turn, the bot always takes the kill instead
-    of switching away from a winning position.
+    -1) if every move is out of PP.
+
+    Priority is factored into two decision points, not just raw damage:
+      • If any available move can KO the foe's current active outright,
+        the bot doesn't just grab whichever such move scores highest on
+        paper - among the moves that would actually KO, it prefers one
+        that's guaranteed to go first (_acts_first: priority bracket beats
+        Speed, same as the real turn order). A slower Pokemon's biggest
+        hit is worthless if it faints before landing it - Golisopod
+        packing Aqua Jet should use that to finish a faster Moltres
+        instead of a stronger move that never gets to fire.
+      • If the foe's predicted move would win the overall trade against
+        our current pick - including the classic "both survive one hit,
+        but whoever attacks first lands the finishing blow one hit sooner"
+        case, not just an immediate one-turn faint - the bot falls back to
+        its best move that DOES win that trade (_survives_trade),
+        typically a priority move, rather than a bigger hit that loses a
+        war of attrition it was actually able to win.
+    Either way, this never overrides taking a guaranteed kill - going for
+    the KO always beats "best raw score" once one is on the table.
 
     Switching: since the bot can see the opponent's entire moveset, it
     doesn't just compare "my best move vs their best move" - it works out
@@ -159,10 +226,35 @@ def bot_choose_action(trainer: Trainer, opponent: Trainer) -> tuple:
         best_idx = max(available, key=lambda i: scores[i])
         best_frac = scores[best_idx] / max(defender.max_hp, 1)
 
+        predicted_def_move = _predicted_opponent_move(defender, active)
+
         # A guaranteed (or near-guaranteed) kill this turn is always worth
         # taking - never switch away from a foe that's already going down.
-        if estimate_damage(active, defender, moves[best_idx]) >= defender.hp:
-            return ("move", best_idx)
+        # But among every move that WOULD KO, prefer one that actually
+        # wins the turn-order race - a bigger non-priority hit is no good
+        # if this Pokemon is slower and faints before it goes off.
+        lethal = [i for i in available if estimate_damage(active, defender, moves[i]) >= defender.hp]
+        if lethal:
+            racing_lethal = [i for i in lethal if _acts_first(active, defender, moves[i], predicted_def_move)]
+            pool = racing_lethal or lethal
+            return ("move", max(pool, key=lambda i: scores[i]))
+
+        # Not lethal this turn - check whether our current pick actually
+        # wins the war of attrition against the foe's predicted move. If
+        # it doesn't (we're slower and would faint before finishing the
+        # job - including the "both survive the first hit but priority
+        # wins the race" case), fall back to the best available move that
+        # DOES win that race.
+        if predicted_def_move is not None:
+            best_acts_first = _acts_first(active, defender, moves[best_idx], predicted_def_move)
+            if not _survives_trade(active, defender, moves[best_idx], predicted_def_move, best_acts_first):
+                racing = [i for i in available
+                          if _acts_first(active, defender, moves[i], predicted_def_move)]
+                surviving = [i for i in racing
+                             if _survives_trade(active, defender, moves[i], predicted_def_move, True)]
+                if surviving:
+                    best_idx = max(surviving, key=lambda i: scores[i])
+                    best_frac = scores[best_idx] / max(defender.max_hp, 1)
 
     bench = [(i, p) for i, p in enumerate(trainer.team) if not p.fainted and p is not active]
     if not bench:
