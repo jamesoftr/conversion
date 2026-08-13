@@ -36,7 +36,8 @@ import aiohttp
 
 from .constants import (
     POKEAPI, FALLBACK_MOVE, STATUS_INDUCING_AILMENTS, STAT_KEY_MAP,
-    SELF_STAT_LOWERING_MOVES, _col, type_multiplier,
+    SELF_STAT_LOWERING_MOVES, RECHARGE_MOVES, RECHARGE_MOVE_CHANCE,
+    STATUS_MOVE_CHANCE, MOVELESS_FORM_SUFFIXES, _col, type_multiplier,
 )
 from .engine import BattlePokemon
 
@@ -188,21 +189,35 @@ async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4)
 
     1. Priority — its single best (highest-power) priority move, any type,
        if it learns one (Quick Attack, Aqua Jet, Sucker Punch, ...).
-    2. STAB — its best move of each of its own types: 1 slot for a
-       mono-type Pokemon, 2 for a dual-type one.
-    3. Status — a 50/50 coin flip; if it hits, its best status move (a
-       reliable ailment-inducer like Thunder Wave/Toxic/Spore if it learns
-       one, else its best pure stat-changer like Swords Dance/Growl).
+    2. STAB — its best NON-recharge move of each of its own types: 1 slot
+       for a mono-type Pokemon, 2 for a dual-type one. Recharge moves
+       (Hyper Beam, Giga Impact, Frenzy Plant, ...) are excluded from this
+       normal picking entirely — see step 3a below for how they're added
+       instead.
+    3. Status — a STATUS_MOVE_CHANCE roll (20%); if it hits, its best
+       status move (a reliable ailment-inducer like Thunder Wave/Toxic/
+       Spore if it learns one, else its best pure stat-changer like Swords
+       Dance/Growl).
+    3a. Recharge — a Pokemon only ever gets a recharge move if it shares
+        that move's type (Frenzy Plant only offered to a Grass-type like
+        Sceptile, Hyper Beam only to a Normal-type, etc.), and even then
+        only RECHARGE_MOVE_CHANCE (30%) of the time. When it hits, the
+        recharge move swaps in for that type's normal STAB pick from step
+        2 rather than taking an extra slot — so a Pokemon isn't stuck
+        recharging turn after turn, it's a deliberate high-risk option in
+        place of its usual same-type move, not an addition to it.
     4. Coverage/debuff — one more move: preferably one that lowers the
        *opponent's* Speed (Icy Wind, Rock Tomb, ...), failing that any
        move that lowers one of the opponent's other stats (Acid, Mud
        Bomb, ...), and only failing that a plain off-type coverage move.
+       Recharge moves are never picked here either — only via 3a.
 
-    That's already 4 items for a dual-type Pokemon whose status coin flip
-    hits (priority + 2 STAB + status), so the coverage/debuff slot simply
+    That's already 4 items for a dual-type Pokemon whose status roll hits
+    (priority + 2 STAB + status), so the coverage/debuff slot simply
     doesn't fit that turn — same idea in reverse for a mono-type Pokemon
     with no priority move, which needs the leftover slots backfilled with
-    its next-strongest remaining moves so the set is never short.
+    its next-strongest remaining (still non-recharge) moves so the set is
+    never short.
     """
     pool = data.get("move_pool", [])
     if not pool:
@@ -211,10 +226,16 @@ async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4)
 
     move_map = await get_move_data_bulk(session, pool)
     results = list(move_map.values())
-    damage_candidates = [
+    all_damage_candidates = [
         mv for mv in results
         if mv.get("power") and mv.get("damage_class") != "status"
     ]
+    # Recharge moves (Hyper Beam, Giga Impact, ...) are pulled out of the
+    # normal damage pool so priority/STAB/coverage/backfill never lean on
+    # raw power alone and grab one just because it hits hardest — they're
+    # only ever added back in deliberately, via the STAB-swap below.
+    recharge_candidates = [mv for mv in all_damage_candidates if mv.get("name") in RECHARGE_MOVES]
+    damage_candidates = [mv for mv in all_damage_candidates if mv.get("name") not in RECHARGE_MOVES]
     ailment_status_candidates = [
         mv for mv in results
         if mv.get("damage_class") == "status"
@@ -225,7 +246,7 @@ async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4)
         mv for mv in results
         if mv.get("damage_class") == "status" and mv.get("stat_changes")
     ]
-    if not damage_candidates:
+    if not all_damage_candidates:
         tackle = await get_move_data(session, "tackle")
         return [tackle] if tackle else [FALLBACK_MOVE]
 
@@ -250,8 +271,8 @@ async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4)
         if stab_pool:
             _add(max(stab_pool, key=lambda m: m.get("power") or 0))
 
-    # 3) Status — 50/50 chance to add its single best status move.
-    if len(chosen) < count and random.random() < 0.5:
+    # 3) Status — STATUS_MOVE_CHANCE roll to add its single best status move.
+    if len(chosen) < count and random.random() < STATUS_MOVE_CHANCE:
         best_status = None
         if ailment_status_candidates:
             best_status = max(ailment_status_candidates, key=lambda m: m.get("accuracy") or 0)
@@ -261,6 +282,29 @@ async def pick_moves(session: aiohttp.ClientSession, data: dict, count: int = 4)
                 key=lambda m: sum(abs(sc.get("change", 0)) for sc in m.get("stat_changes", [])),
             )
         _add(best_status)
+
+    # 3a) Recharge — never an extra slot, only a same-type swap for the
+    #     STAB move already chosen in step 2. A Pokemon has to actually
+    #     share the recharge move's type (Frenzy Plant <-> a Grass-type
+    #     like Sceptile) to be eligible at all, and even then it's only a
+    #     RECHARGE_MOVE_CHANCE (30%) roll per type. Missing the roll (or
+    #     not learning a matching recharge move) just leaves the normal
+    #     no-recharge STAB pick in place.
+    for t in own_types:
+        type_recharge_pool = [m for m in recharge_candidates if m.get("type") == t]
+        if not type_recharge_pool or random.random() >= RECHARGE_MOVE_CHANCE:
+            continue
+        best_recharge = max(type_recharge_pool, key=lambda m: m.get("power") or 0)
+        swap_idx = next(
+            (i for i, m in enumerate(chosen)
+             if m.get("type") == t and m.get("name") not in RECHARGE_MOVES
+             and m.get("priority", 0) <= 0),  # don't clobber the priority pick
+            None,
+        )
+        if swap_idx is not None:
+            chosen[swap_idx] = best_recharge
+        elif len(chosen) < count:
+            chosen.append(best_recharge)
 
     # 4) Coverage/debuff — prefer a move that lowers the opponent's Speed,
     #    then any move that lowers one of the opponent's other stats,
@@ -427,7 +471,9 @@ async def get_pokemon_of_type(session: aiohttp.ClientSession, type_name: str) ->
     key = f"type:{type_name}"
     doc = await _col().type_pool_cache.find_one({"_id": key})
     if doc:
-        return doc.get("pokemon", [])
+        # Filter here too (not just at write time) so pools cached before
+        # MOVELESS_FORM_SUFFIXES existed don't keep serving Gmax forms.
+        return [n for n in doc.get("pokemon", []) if not n.endswith(MOVELESS_FORM_SUFFIXES)]
     try:
         async with session.get(f"{POKEAPI}/type/{type_name}", timeout=15) as r:
             if r.status != 200:
@@ -435,7 +481,8 @@ async def get_pokemon_of_type(session: aiohttp.ClientSession, type_name: str) ->
             data = await r.json()
     except Exception:
         return []
-    names = [p["pokemon"]["name"] for p in data.get("pokemon", [])]
+    names = [p["pokemon"]["name"] for p in data.get("pokemon", [])
+              if not p["pokemon"]["name"].endswith(MOVELESS_FORM_SUFFIXES)]
     await _col().type_pool_cache.update_one({"_id": key}, {"$set": {"pokemon": names}}, upsert=True)
     return names
 
@@ -483,12 +530,23 @@ async def pick_gym_moves(session: aiohttp.ClientSession, data: dict,
     move_data = await get_move_data_bulk(session, move_pool_names)
     already_have = {m["name"] for m in base}
     coverage_candidates = sorted(
-        (m for m in move_data.values() if m and m["name"] not in already_have and (m.get("power") or 0) > 0),
+        (m for m in move_data.values()
+         if m and m["name"] not in already_have and (m.get("power") or 0) > 0
+         and m["name"] not in RECHARGE_MOVES),  # recharge moves only ever come in via pick_moves()'s own rule
         key=coverage_score,
         reverse=True,
     )
 
-    base_by_weakness = sorted(range(len(base)), key=lambda i: coverage_score(base[i]))
+    # Priority-move slots are protected from the coverage swap outright —
+    # a low-power priority move (Aqua Jet, Quick Attack, ...) usually loses
+    # on raw coverage_score to almost anything, but its entire value is
+    # going first regardless of Speed. Swapping it for a bigger hit that
+    # never gets to fire because the Pokemon is slow defeats the point of
+    # having it on a slower gym Pokemon in the first place.
+    base_by_weakness = sorted(
+        (i for i in range(len(base)) if base[i].get("priority", 0) <= 0),
+        key=lambda i: coverage_score(base[i]),
+    )
     for slot_i in base_by_weakness:
         if not coverage_candidates:
             break
@@ -516,7 +574,9 @@ async def _best_gym_counters(session: aiohttp.ClientSession, gym_type: str,
     fetched = list(await asyncio.gather(
         *[get_pokemon_data(session, name) for name in to_check], return_exceptions=True
     ))
-    candidates = [d for d in fetched if isinstance(d, dict) and gym_type in (d.get("types") or [])]
+    candidates = [d for d in fetched
+                  if isinstance(d, dict) and gym_type in (d.get("types") or [])
+                  and d.get("move_pool")]  # skip battle-only forms with no real moveset (e.g. Gmax)
     if not candidates:
         # Type pool fetch failed outright - fall back to a few random
         # dex rolls filtered to the right type rather than erroring out.
