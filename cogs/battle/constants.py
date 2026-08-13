@@ -142,6 +142,27 @@ RECHARGE_MOVES = {
     "meteor-assault", "eternabeam",
 }
 
+# Chance (0-1) that an otherwise-eligible recharge move (see RECHARGE_MOVES)
+# gets slotted into a generated moveset in place of its type's normal STAB
+# pick. Kept low since recharge moves cost the user the entire following
+# turn if they connect - a team of recharge-spammers is a much weaker gym
+# than one that mostly hits and stays mobile.
+RECHARGE_MOVE_CHANCE = 0.30
+
+# Chance (0-1) that pick_moves() adds a status move at all. Lowered from a
+# 50/50 coin flip - status moves do nothing to close out a fight and a gym
+# team leaning on them too often stalls instead of pressuring the
+# challenger.
+STATUS_MOVE_CHANCE = 0.20
+
+# Species name suffixes for battle-only forms that PokeAPI gives an empty
+# (or near-empty) move_pool - they don't really "learn" moves of their own
+# in the games either, they just borrow the base form's kit. Left in a
+# gym's candidate pool, pick_moves() has nothing to build a set from and
+# silently falls back to Tackle-only. Filtered out wherever gym counters
+# are chosen from a /type species list.
+MOVELESS_FORM_SUFFIXES = ("-gmax", "-eternamax")
+
 # ── Flinching ────────────────────────────────────────────────────────────────
 # Fake Out is a damaging move whose 100% flinch chance PokeAPI reports like
 # any other secondary effect — but it uniquely only works the turn a
